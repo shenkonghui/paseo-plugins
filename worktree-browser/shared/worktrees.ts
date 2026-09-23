@@ -43,6 +43,17 @@ export const createWorktreeRpc = defineRpc({
   output: z.object({ path: z.string(), branch: z.string() }),
 });
 
+export const removeWorktreeRpc = defineRpc({
+  name: "worktrees.remove",
+  input: z.object({
+    repoRoot: z.string(),
+    path: z.string(),
+    force: z.boolean().optional(),
+    deleteBranch: z.boolean().optional(),
+  }),
+  output: z.object({ removed: z.string(), branchDeleted: z.string().nullable() }),
+});
+
 export const SubmoduleChangeSchema = z.object({
   code: z.string(),
   path: z.string(),

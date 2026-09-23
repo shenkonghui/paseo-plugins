@@ -115,3 +115,31 @@ export async function createWorktree(
   await runGit(input.repoRoot, ["worktree", "add", "-b", target, directory, source]);
   return { path: directory, branch: target };
 }
+
+export interface RemoveWorktreeInput {
+  repoRoot: string;
+  path: string;
+  force?: boolean;
+  deleteBranch?: boolean;
+}
+
+export async function removeWorktree(
+  input: RemoveWorktreeInput,
+): Promise<{ removed: string; branchDeleted: string | null }> {
+  const path = expandHome(input.path.trim());
+  if (!path) throw new Error("worktree 路径不能为空");
+  const { worktrees } = await listWorktrees(input.repoRoot);
+  const target = worktrees.find((worktree) => worktree.path === path);
+  if (!target) throw new Error(`不是该仓库的 worktree: ${path}`);
+  if (target.main) throw new Error("不能删除主 worktree");
+  await runGit(
+    input.repoRoot,
+    ["worktree", "remove", ...(input.force ? ["--force"] : []), path],
+  );
+  let branchDeleted: string | null = null;
+  if (input.deleteBranch && target.branch) {
+    await runGit(input.repoRoot, ["branch", "-D", target.branch]);
+    branchDeleted = target.branch;
+  }
+  return { removed: path, branchDeleted };
+}
