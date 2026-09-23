@@ -1,0 +1,6 @@
+{
+  "id": "fix-skill",
+  "requirements": {
+    "paseo": ">=0.8.0"
+  }
+}
