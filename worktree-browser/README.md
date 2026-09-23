@@ -14,3 +14,8 @@ by `workspaceDirectory`; linked rows open the workspace through `navigation.open
 unlinked rows offer "创建 workspace" which calls `paseo.workspaces.create` with a
 `{ kind: "directory", path, projectId }` source so the new workspace lands under the same
 project, then navigates into it.
+
+Non-main worktrees also offer "删除", which calls the `worktrees.remove` plugin RPC
+(`git worktree remove` on the daemon host, with an optional `--force` toggle and an
+optional "同时删除分支" toggle that runs `git branch -D` afterwards). Removing a worktree
+does not delete a Paseo workspace linked to it — delete that separately if it exists.

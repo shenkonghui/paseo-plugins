@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { sanitizePathSegment } from "../shared/worktrees";
 import { parseNameStatus, parsePorcelainChanges, parseSubmodulePaths } from "./git-submodules";
-import { createWorktree, expandHome, parseWorktreePorcelain } from "./git-worktrees";
+import {
+  createWorktree,
+  expandHome,
+  parseWorktreePorcelain,
+  removeWorktree,
+} from "./git-worktrees";
 
 describe("parseWorktreePorcelain", () => {
   it("parses main and linked worktrees with branches", () => {
@@ -140,6 +145,65 @@ describe("createWorktree", () => {
     await expect(
       createWorktree({ repoRoot: repo, sourceBranch: "", targetBranch: "x", directory: "/tmp/y" }),
     ).rejects.toThrow("不能为空");
+  });
+});
+
+describe("removeWorktree", () => {
+  function initRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), "wt-rm-test-"));
+    const git = (args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+    git(["init"]);
+    git(["config", "user.email", "test@example.com"]);
+    git(["config", "user.name", "test"]);
+    git(["commit", "--allow-empty", "-m", "init"]);
+    return dir;
+  }
+
+  it("removes a linked worktree and optionally deletes its branch", async () => {
+    const repo = initRepo();
+    const dir = `${repo}-linked`;
+    await createWorktree({
+      repoRoot: repo,
+      sourceBranch: "HEAD",
+      targetBranch: "feature/gone",
+      directory: dir,
+    });
+    const result = await removeWorktree({ repoRoot: repo, path: dir, deleteBranch: true });
+    expect(result).toEqual({ removed: dir, branchDeleted: "feature/gone" });
+    expect(existsSync(dir)).toBe(false);
+    expect(() =>
+      execFileSync("git", ["-C", repo, "rev-parse", "--verify", "refs/heads/feature/gone"]),
+    ).toThrow();
+  });
+
+  it("refuses to remove the main worktree", async () => {
+    const repo = initRepo();
+    await expect(removeWorktree({ repoRoot: repo, path: repo })).rejects.toThrow(
+      "主 worktree",
+    );
+  });
+
+  it("rejects paths that are not worktrees", async () => {
+    const repo = initRepo();
+    await expect(
+      removeWorktree({ repoRoot: repo, path: `${repo}-nope` }),
+    ).rejects.toThrow("不是该仓库的 worktree");
+  });
+
+  it("requires --force for dirty worktrees", async () => {
+    const repo = initRepo();
+    const dir = `${repo}-dirty`;
+    await createWorktree({
+      repoRoot: repo,
+      sourceBranch: "HEAD",
+      targetBranch: "dirty",
+      directory: dir,
+    });
+    execFileSync("touch", [join(dir, "untracked.txt")]);
+    await expect(removeWorktree({ repoRoot: repo, path: dir })).rejects.toThrow();
+    const result = await removeWorktree({ repoRoot: repo, path: dir, force: true });
+    expect(result.removed).toBe(dir);
+    expect(existsSync(dir)).toBe(false);
   });
 });
 

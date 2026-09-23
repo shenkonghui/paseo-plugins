@@ -5,6 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import {
   createWorktreeRpc,
   listWorktreesRpc,
+  removeWorktreeRpc,
   sanitizePathSegment,
   worktreeBranchesRpc,
   type Worktree,
@@ -244,6 +245,50 @@ function useStyles(theme: Theme, compact: boolean) {
         fontSize: 13,
         fontWeight: "600" as const,
       },
+      actionButtonDanger: {
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        borderWidth: 1,
+        borderColor: theme.colors.statusDanger,
+      },
+      actionButtonDangerText: {
+        color: theme.colors.statusDanger,
+        fontSize: 13,
+        fontWeight: "600" as const,
+      },
+      cardActions: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+      },
+      optionRow: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+      },
+      optionCheckbox: {
+        width: 16,
+        height: 16,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+      },
+      optionCheckboxChecked: {
+        width: 16,
+        height: 16,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: theme.colors.accent,
+        backgroundColor: theme.colors.accent,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+      },
+      optionCheckmark: { color: theme.colors.accentForeground, fontSize: 11 },
+      optionLabel: { color: theme.colors.foreground, fontSize: 13 },
+      confirmText: { color: theme.colors.foreground, fontSize: 13 },
       refreshButton: {
         borderRadius: 8,
         borderWidth: 1,
@@ -319,6 +364,7 @@ function WorktreeCard({
   creating,
   onCreate,
   onOpen,
+  onDelete,
   styles,
 }: {
   worktree: Worktree;
@@ -326,10 +372,12 @@ function WorktreeCard({
   creating: boolean;
   onCreate: (worktree: Worktree) => void;
   onOpen: (workspaceId: string) => void;
+  onDelete: (worktree: Worktree) => void;
   styles: ReturnType<typeof useStyles>;
 }) {
   const handleCreate = useCallback(() => onCreate(worktree), [onCreate, worktree]);
   const handleOpen = useCallback(() => workspace && onOpen(workspace.id), [onOpen, workspace]);
+  const handleDelete = useCallback(() => onDelete(worktree), [onDelete, worktree]);
   const title = worktree.branch ?? "(detached)";
   const meta = [
     worktree.head ? `HEAD ${shortHead(worktree.head)}` : null,
@@ -358,26 +406,40 @@ function WorktreeCard({
         <Text style={styles.linkText} numberOfLines={1}>
           {workspace ? `workspace: ${workspace.name}` : "未关联 workspace"}
         </Text>
-        {workspace ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`打开 ${workspace.name}`}
-            onPress={handleOpen}
-            style={styles.actionButtonSecondary}
-          >
-            <Text style={styles.actionButtonSecondaryText}>打开</Text>
-          </Pressable>
-        ) : (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`基于 ${title} 创建 workspace`}
-            disabled={creating}
-            onPress={handleCreate}
-            style={styles.actionButton}
-          >
-            <Text style={styles.actionButtonText}>{creating ? "创建中…" : "+ 创建 workspace"}</Text>
-          </Pressable>
-        )}
+        <View style={styles.cardActions}>
+          {workspace ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`打开 ${workspace.name}`}
+              onPress={handleOpen}
+              style={styles.actionButtonSecondary}
+            >
+              <Text style={styles.actionButtonSecondaryText}>打开</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`基于 ${title} 创建 workspace`}
+              disabled={creating}
+              onPress={handleCreate}
+              style={styles.actionButton}
+            >
+              <Text style={styles.actionButtonText}>
+                {creating ? "创建中…" : "+ 创建 workspace"}
+              </Text>
+            </Pressable>
+          )}
+          {worktree.main ? null : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`删除 worktree ${title}`}
+              onPress={handleDelete}
+              style={styles.actionButtonDanger}
+            >
+              <Text style={styles.actionButtonDangerText}>删除</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
     </View>
   );
@@ -577,6 +639,134 @@ function CreateWorktreeModal({
   );
 }
 
+function OptionToggle({
+  label,
+  checked,
+  onToggle,
+  styles,
+}: {
+  label: string;
+  checked: boolean;
+  onToggle: () => void;
+  styles: ReturnType<typeof useStyles>;
+}) {
+  return (
+    <Pressable accessibilityRole="button" onPress={onToggle} style={styles.optionRow}>
+      <View style={checked ? styles.optionCheckboxChecked : styles.optionCheckbox}>
+        {checked ? <Text style={styles.optionCheckmark}>✓</Text> : null}
+      </View>
+      <Text style={styles.optionLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function RemoveWorktreeModal({
+  worktree,
+  repoRoot,
+  onClose,
+  onRemoved,
+  styles,
+}: {
+  worktree: Worktree | null;
+  repoRoot: string;
+  onClose: () => void;
+  onRemoved: () => void;
+  styles: ReturnType<typeof useStyles>;
+}) {
+  const removeWorktree = useRpc(removeWorktreeRpc);
+  const toast = useToast();
+  const [force, setForce] = useState(false);
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const open = worktree !== null;
+
+  useEffect(() => {
+    if (open) {
+      setForce(false);
+      setDeleteBranch(false);
+    }
+  }, [open]);
+
+  const toggleForce = useCallback(() => setForce((value) => !value), []);
+  const toggleDeleteBranch = useCallback(() => setDeleteBranch((value) => !value), []);
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (!next) onClose();
+    },
+    [onClose],
+  );
+  const handleSubmit = useCallback(async () => {
+    if (!worktree || submitting) return;
+    setSubmitting(true);
+    try {
+      const result = await removeWorktree({
+        repoRoot,
+        path: worktree.path,
+        force,
+        deleteBranch,
+      });
+      toast.show(
+        result.branchDeleted
+          ? `worktree 已删除，分支 ${result.branchDeleted} 已删除`
+          : "worktree 已删除",
+        { variant: "success" },
+      );
+      onRemoved();
+      onClose();
+    } catch (failure) {
+      toast.show(failure instanceof Error ? failure.message : String(failure), {
+        variant: "error",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [worktree, submitting, removeWorktree, repoRoot, force, deleteBranch, toast, onRemoved, onClose]);
+
+  const title = worktree?.branch ?? "(detached)";
+  return (
+    <Modal title="删除 worktree" open={open} onOpenChange={handleOpenChange}>
+      <Modal.Content>
+        <Text style={styles.confirmText}>确认删除 worktree？该操作不可撤销。</Text>
+        <Text style={styles.cardPath} numberOfLines={2}>
+          {worktree?.path}
+        </Text>
+        <OptionToggle
+          label="强制删除（忽略未提交的改动）"
+          checked={force}
+          onToggle={toggleForce}
+          styles={styles}
+        />
+        {worktree?.branch ? (
+          <OptionToggle
+            label={`同时删除分支 ${title}`}
+            checked={deleteBranch}
+            onToggle={toggleDeleteBranch}
+            styles={styles}
+          />
+        ) : null}
+        <View style={styles.submitRow}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={onClose}
+            style={styles.actionButtonSecondary}
+          >
+            <Text style={styles.actionButtonSecondaryText}>取消</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`删除 worktree ${title}`}
+            disabled={submitting}
+            onPress={handleSubmit}
+            style={styles.actionButtonDanger}
+          >
+            <Text style={styles.actionButtonDangerText}>{submitting ? "删除中…" : "删除"}</Text>
+          </Pressable>
+        </View>
+      </Modal.Content>
+    </Modal>
+  );
+}
+
 export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProps) {
   const paseo = usePaseo();
   const listWorktrees = useRpc(listWorktreesRpc);
@@ -588,8 +778,10 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
   const [nonce, setNonce] = useState(0);
   const [creatingPath, setCreatingPath] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [removing, setRemoving] = useState<Worktree | null>(null);
   const openCreate = useCallback(() => setCreateOpen(true), []);
   const closeCreate = useCallback(() => setCreateOpen(false), []);
+  const closeRemove = useCallback(() => setRemoving(null), []);
 
   const project = useMemo(
     () => projects?.find((option) => option.projectId === projectId) ?? projects?.[0] ?? null,
@@ -682,6 +874,7 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
             creating={creatingPath === worktree.path}
             onCreate={createWorkspace}
             onOpen={openWorkspace}
+            onDelete={setRemoving}
             styles={styles}
           />
         ))}
@@ -735,6 +928,15 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
           projectName={project.name}
           onClose={closeCreate}
           onCreated={refresh}
+          styles={styles}
+        />
+      ) : null}
+      {project && isGitProject ? (
+        <RemoveWorktreeModal
+          worktree={removing}
+          repoRoot={project.rootPath}
+          onClose={closeRemove}
+          onRemoved={refresh}
           styles={styles}
         />
       ) : null}
