@@ -1,0 +1,8 @@
+{
+  "id": "assistant",
+  "name": "助理",
+  "description": "在左侧栏 Workspaces 上方提供一个固定的「助理」入口，复用 $PASEO_HOME/default 下唯一的会话。",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}

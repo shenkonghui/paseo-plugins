@@ -1,0 +1,7 @@
+{
+  "id": "agent-injector",
+  "description": "为每个新建 agent 注入全局规则(systemPrompt)与额外 MCP server",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}

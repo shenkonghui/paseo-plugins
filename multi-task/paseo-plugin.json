@@ -1,0 +1,8 @@
+{
+  "id": "multi-task",
+  "name": "多任务",
+  "description": "左侧栏 Workspaces 上方的「多任务」入口：可自定义添加任意 workspace 中任意 agent 的对话面板，并排实时查看与发送消息。",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}

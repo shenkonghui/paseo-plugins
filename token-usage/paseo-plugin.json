@@ -1,0 +1,7 @@
+{
+  "id": "token-usage",
+  "name": "Token 监控",
+  "requirements": {
+    "paseo": ">=0.8.0"
+  }
+}

@@ -1,0 +1,502 @@
+import type { PluginScreenProps } from "@getpaseo/plugin/client";
+import { usePaseo } from "@getpaseo/plugin/client";
+import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Animated, Pressable, ScrollView, Text, View } from "react-native";
+import type { MultiTaskView, MultiTaskViewMode } from "../shared/settings";
+import { EmbeddedAgent } from "./embedded-agent";
+import { EntryView } from "./entry-view";
+import { STATUS_LABELS, useAgentTimeline } from "./timeline";
+
+type Theme = PluginScreenProps["theme"];
+type Navigation = PluginScreenProps["navigation"];
+
+export interface AgentPaneInfo {
+  workspaceLabel: string | null;
+  agentTitle: string | null;
+  agentStatus: string | null;
+}
+
+interface AgentPaneProps {
+  view: MultiTaskView;
+  info: AgentPaneInfo | null;
+  /** 该 workspace 当前活跃的 agent；workspace 里没有 agent 时为 null。 */
+  agentId: string | null;
+  /** 由外层按任务数量平铺计算出的尺寸，保证内层消息列表可滚动。 */
+  width: number;
+  height: number;
+  /** 内嵌原生会话的 URL；为 null 时（无 DOM / 无 agent）只能自绘。 */
+  embedSrc: string | null;
+  /** 是否为当前焦点面板（高亮显示）。 */
+  active: boolean;
+  theme: Theme;
+  navigation: Navigation;
+  onActivate: () => void;
+  /** 折叠该面板到窗口底部的最小化条。 */
+  onToggleCollapse: () => void;
+  /** 拖动头部结束后回调：给出相对起点的位移，由外层换算新的顺序。 */
+  onDrop: (dx: number, dy: number) => void;
+  onRemove: (viewId: string) => void;
+  onSetMode: (mode: MultiTaskViewMode) => void;
+}
+
+/** 拖动用到的 DOM 事件/目标的最小结构，避免依赖 DOM 类型（插件 tsconfig 不带 lib.dom）。 */
+interface PointerLike {
+  button?: number;
+  clientX?: number;
+  clientY?: number;
+  preventDefault?(): void;
+  stopPropagation?(): void;
+}
+
+interface DomEventTarget {
+  addEventListener(type: string, listener: (event: PointerLike) => void, capture?: boolean): void;
+  removeEventListener(type: string, listener: (event: PointerLike) => void, capture?: boolean): void;
+}
+
+export function statusColor(status: string | null, theme: Theme): string {
+  switch (status) {
+    case "running":
+      return theme.colors.accent;
+    case "error":
+      return theme.colors.statusDanger;
+    case "idle":
+      return theme.colors.statusSuccess;
+    case "initializing":
+      return theme.colors.statusWarning;
+    default:
+      return theme.colors.foregroundMuted;
+  }
+}
+
+function useStyles(theme: Theme) {
+  return useMemo(
+    () => ({
+      pane: {
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface1,
+        overflow: "hidden" as const,
+      },
+      paneInner: { flex: 1 },
+      // 拖动中的面板：浮到最上层并略微透明。
+      paneDragging: { zIndex: 10, opacity: 0.9 },
+      gripWrap: { paddingHorizontal: 3, paddingVertical: 6 },
+      grip: { color: theme.colors.foregroundMuted, fontSize: 13 },
+      // 当前焦点面板：accent 描边 + 一点辉光。
+      paneActive: {
+        borderColor: theme.colors.accent,
+        shadowColor: theme.colors.accent,
+        shadowOpacity: 0.35,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 0 },
+      },
+      header: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        // 头部用一层底色 + 加粗底边，多个面板并排时更容易区分。
+        backgroundColor: theme.colors.surface2,
+        borderBottomWidth: 2,
+        borderBottomColor: theme.colors.border,
+      },
+      // 标题栏左侧的 accent 竖条，让标题栏一眼可见。
+      headerBar: {
+        width: 3,
+        alignSelf: "stretch" as const,
+        borderRadius: 2,
+        backgroundColor: theme.colors.accent,
+      },
+      grow: { flex: 1, minWidth: 0 },
+      titleRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+      dot: { width: 8, height: 8, borderRadius: 4 },
+      title: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const },
+      meta: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      iconButton: {
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+      },
+      iconButtonText: { color: theme.colors.foreground, fontSize: 12 },
+      body: { flex: 1 },
+      bodyContent: { padding: 12, gap: 10 },
+      empty: {
+        flex: 1,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+        padding: 16,
+      },
+      emptyText: { color: theme.colors.foregroundMuted, fontSize: 14, textAlign: "center" as const },
+      errorText: { color: theme.colors.statusDanger, fontSize: 13 },
+      sendStatusBar: {
+        paddingHorizontal: 10,
+        paddingTop: 6,
+      },
+      sendStatusText: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      footer: {
+        flexDirection: "row" as const,
+        alignItems: "flex-end" as const,
+        gap: 6,
+        padding: 8,
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.border,
+      },
+      input: {
+        flex: 1,
+        minHeight: 34,
+        maxHeight: 96,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 8,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        color: theme.colors.foreground,
+        fontSize: 14,
+      },
+      sendButton: {
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        backgroundColor: theme.colors.accent,
+      },
+      sendButtonDisabled: {
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        backgroundColor: theme.colors.surface2,
+      },
+      sendText: { color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" as const },
+      sendTextDisabled: { color: theme.colors.foregroundMuted, fontSize: 13 },
+    }),
+    [theme],
+  );
+}
+
+export function AgentPane({
+  view,
+  info,
+  agentId,
+  width,
+  height,
+  embedSrc,
+  active,
+  theme,
+  navigation,
+  onActivate,
+  onToggleCollapse,
+  onDrop,
+  onRemove,
+  onSetMode,
+}: AgentPaneProps) {
+  const paseo = usePaseo();
+  const toast = useToast();
+  const styles = useStyles(theme);
+  // 没有 agent / 没有可用的内嵌地址时强制自绘。
+  const effectiveMode: MultiTaskViewMode = embedSrc ? view.mode : "stream";
+  const embedded = effectiveMode === "embedded" && embedSrc != null;
+  const { entries, status, error } = useAgentTimeline(agentId ?? "", !embedded && agentId != null);
+  const scrollRef = useRef<ScrollView>(null);
+  // 只在贴近底部时自动跟随新内容；用户往上翻时不打断。
+  const stickToBottom = useRef(true);
+  const [draft, setDraft] = useState("");
+  // 待发送队列：发送中再次发送就排队，逐个发出。
+  const [queue, setQueue] = useState<string[]>([]);
+  const [sending, setSending] = useState(false);
+  // agent 正在跑当前回合时也算忙：这条消息先排队，等它空闲再发。
+  // 想要「忙时也立刻投递（steering）」的话，把 agentRunning 从 busy 里去掉即可。
+  const agentRunning = (status ?? info?.agentStatus) === "running";
+  const busy = sending || agentRunning;
+
+  // 拖动头部把手调整顺序：用 DOM 层 pointer 事件（RN responder 在宿主里会被外层抢走）。
+  const dragXY = useRef(new Animated.ValueXY()).current;
+  const [dragging, setDragging] = useState(false);
+  const gripRef = useRef<View>(null);
+  const dropRef = useRef(onDrop);
+  useEffect(() => {
+    dropRef.current = onDrop;
+  }, [onDrop]);
+
+  useEffect(() => {
+    const grip = gripRef.current as unknown as DomEventTarget | null;
+    const globalTarget = globalThis as unknown as DomEventTarget;
+    if (
+      !grip ||
+      typeof grip.addEventListener !== "function" ||
+      typeof globalTarget.addEventListener !== "function"
+    ) {
+      return;
+    }
+    let startX = 0;
+    let startY = 0;
+    let active = false;
+    let moved = false;
+
+    const onMove = (event: PointerLike) => {
+      if (!active) return;
+      const dx = (event.clientX ?? 0) - startX;
+      const dy = (event.clientY ?? 0) - startY;
+      if (!moved) {
+        // 超过阈值才算拖动，单纯点一下不触发。
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        moved = true;
+        setDragging(true);
+      }
+      dragXY.setValue({ x: dx, y: dy });
+    };
+    const finish = (event: PointerLike) => {
+      if (!active) return;
+      active = false;
+      globalTarget.removeEventListener("pointermove", onMove, true);
+      globalTarget.removeEventListener("pointerup", finish, true);
+      globalTarget.removeEventListener("pointercancel", finish, true);
+      if (!moved) return;
+      const dx = (event.clientX ?? 0) - startX;
+      const dy = (event.clientY ?? 0) - startY;
+      dragXY.setValue({ x: 0, y: 0 });
+      setDragging(false);
+      dropRef.current(dx, dy);
+    };
+    const onDown = (event: PointerLike) => {
+      if (event.button != null && event.button !== 0) return;
+      // 阻止选中文字，并避免触发外层 Pressable 的激活。
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      active = true;
+      moved = false;
+      startX = event.clientX ?? 0;
+      startY = event.clientY ?? 0;
+      globalTarget.addEventListener("pointermove", onMove, true);
+      globalTarget.addEventListener("pointerup", finish, true);
+      globalTarget.addEventListener("pointercancel", finish, true);
+    };
+
+    grip.addEventListener("pointerdown", onDown);
+    return () => {
+      grip.removeEventListener("pointerdown", onDown);
+      globalTarget.removeEventListener("pointermove", onMove, true);
+      globalTarget.removeEventListener("pointerup", finish, true);
+      globalTarget.removeEventListener("pointercancel", finish, true);
+    };
+  }, [dragXY]);
+
+  const handleScroll = useCallback(
+    (event: {
+      nativeEvent: {
+        contentOffset: { y: number };
+        contentSize: { height: number };
+        layoutMeasurement: { height: number };
+      };
+    }) => {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      const distance = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+      stickToBottom.current = distance < 48;
+    },
+    [],
+  );
+
+  const handleOpen = useCallback(() => {
+    onActivate();
+    if (agentId) navigation?.openAgent({ agentId });
+  }, [onActivate, navigation, agentId]);
+
+  const handleRemove = useCallback(() => {
+    onActivate();
+    onRemove(view.id);
+  }, [onActivate, onRemove, view.id]);
+  const toggleMode = useCallback(() => {
+    onActivate();
+    onSetMode(effectiveMode === "embedded" ? "stream" : "embedded");
+  }, [onActivate, onSetMode, effectiveMode]);
+
+  // 入队：清空输入框并把消息排到队尾；发送中再发即排队。
+  const enqueue = useCallback(() => {
+    const text = draft.trim();
+    if (text.length === 0 || !agentId) return;
+    setDraft("");
+    setQueue((current) => [...current, text]);
+  }, [draft, agentId]);
+
+  // 队列逐个发出：空闲时取队首发送，忙（发送中 / 回合进行中）则等待。
+  useEffect(() => {
+    if (busy || queue.length === 0 || !agentId) return;
+    const [next, ...rest] = queue;
+    if (next == null) return;
+    setQueue(rest);
+    setSending(true);
+    paseo.agents
+      .ref(agentId)
+      .send(next)
+      .catch((cause) => {
+        toast.show(cause instanceof Error ? cause.message : String(cause), { variant: "error" });
+      })
+      .finally(() => setSending(false));
+  }, [busy, queue, agentId, paseo, toast]);
+
+  // Enter 发送，Shift+Enter 换行（web 上 nativeEvent 带 shiftKey；取不到时就等同 Enter 发送）。
+  const handleKeyPress = useCallback(
+    (event: { preventDefault(): void; nativeEvent: { key: string; shiftKey?: boolean } }) => {
+      if (event.nativeEvent.key !== "Enter" || event.nativeEvent.shiftKey === true) return;
+      event.preventDefault();
+      enqueue();
+    },
+    [enqueue],
+  );
+
+  const title = info?.workspaceLabel ?? view.workspaceId;
+  const effectiveStatus = status ?? info?.agentStatus ?? null;
+  const statusLabel = effectiveStatus ? (STATUS_LABELS[effectiveStatus] ?? effectiveStatus) : "…";
+  const canSend = draft.trim().length > 0 && agentId != null;
+
+  // 发送状态提示：发送中 / 排队中。
+  const pending = queue.length;
+  const sendStatus =
+    sending && pending > 0
+      ? `发送中…（排队 ${pending}）`
+      : sending
+        ? "发送中…"
+        : pending > 0
+          ? `排队中 · ${pending}`
+          : null;
+
+  return (
+    <Animated.View
+      style={[
+        styles.pane,
+        { width, height },
+        active ? styles.paneActive : null,
+        dragging ? styles.paneDragging : null,
+        { transform: dragXY.getTranslateTransform() },
+      ]}
+    >
+      <Pressable accessibilityRole="none" onPress={onActivate} style={styles.paneInner}>
+      <View style={styles.header}>
+        <View style={styles.headerBar} />
+        <View ref={gripRef} style={styles.gripWrap}>
+          <Text style={styles.grip}>⠿</Text>
+        </View>
+        <View style={styles.grow}>
+          <View style={styles.titleRow}>
+            <View style={[styles.dot, { backgroundColor: statusColor(effectiveStatus, theme) }]} />
+            <Text numberOfLines={1} style={styles.title}>
+              {title}
+            </Text>
+          </View>
+          <Text numberOfLines={1} style={styles.meta}>
+            {agentId == null ? "无 agent" : `${info?.agentTitle ?? agentId} · ${statusLabel}`}
+          </Text>
+        </View>
+        {embedSrc ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={embedded ? "改用对话流" : "内嵌原生视图"}
+            onPress={toggleMode}
+            style={styles.iconButton}
+          >
+            <Text style={styles.iconButtonText}>{embedded ? "流" : "内嵌"}</Text>
+          </Pressable>
+        ) : null}
+        {!embedded && agentId != null ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="打开完整会话"
+            onPress={handleOpen}
+            style={styles.iconButton}
+          >
+            <Text style={styles.iconButtonText}>打开</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="隐藏该面板"
+          onPress={() => {
+            onActivate();
+            onToggleCollapse();
+          }}
+          style={styles.iconButton}
+        >
+          <Text style={styles.iconButtonText}>隐藏</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="移出多任务窗口"
+          onPress={handleRemove}
+          style={styles.iconButton}
+        >
+          <Text style={styles.iconButtonText}>移除</Text>
+        </Pressable>
+      </View>
+
+      {agentId == null ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>该 workspace 暂无 agent。</Text>
+        </View>
+      ) : embedded && embedSrc ? (
+        <EmbeddedAgent
+          src={embedSrc}
+          theme={theme}
+          onActivate={onActivate}
+          onFallback={() => onSetMode("stream")}
+        />
+      ) : error ? (
+        <View style={styles.empty}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      ) : (
+        <ScrollView
+          ref={scrollRef}
+          style={styles.body}
+          contentContainerStyle={styles.bodyContent}
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
+          onContentSizeChange={() => {
+            if (stickToBottom.current) scrollRef.current?.scrollToEnd({ animated: false });
+          }}
+        >
+          {entries.length === 0 ? (
+            <Text style={styles.emptyText}>等待输出…</Text>
+          ) : (
+            entries.map((entry) => <EntryView key={entry.key} entry={entry} theme={theme} />)
+          )}
+        </ScrollView>
+      )}
+
+      {embedded || agentId == null ? null : (
+      <>
+      {sendStatus ? (
+        <View style={styles.sendStatusBar}>
+          <Text style={styles.sendStatusText}>{sendStatus}</Text>
+        </View>
+      ) : null}
+      <View style={styles.footer}>
+        <TextInput
+          accessibilityLabel="发送消息"
+          value={draft}
+          multiline
+          placeholder="发送消息…（Enter 发送，Shift+Enter 换行）"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          onChangeText={setDraft}
+          onFocus={onActivate}
+          onKeyPress={handleKeyPress}
+          style={styles.input}
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="发送"
+          disabled={!canSend}
+          onPress={enqueue}
+          style={canSend ? styles.sendButton : styles.sendButtonDisabled}
+        >
+          <Text style={canSend ? styles.sendText : styles.sendTextDisabled}>发送</Text>
+        </Pressable>
+      </View>
+      </>
+      )}
+      </Pressable>
+    </Animated.View>
+  );
+}

@@ -1,0 +1,7 @@
+{
+  "id": "session-changes",
+  "name": "会话变更",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}

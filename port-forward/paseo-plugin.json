@@ -1,0 +1,7 @@
+{
+  "id": "port-forward",
+  "name": "端口转发",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "fix-skill",
+  "private": true,
+  "version": "0.0.0",
+  "files": [
+    "paseo-plugin.json",
+    "README.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "shared/",
+    "server/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.11.1",
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}
