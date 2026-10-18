@@ -11,17 +11,11 @@ export class DevinCollector implements TokenUsageCollector {
   async collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent> {
     const accumulator = new UsageAccumulator();
 
-    // SQLite day math is UTC-only; shift each row into host-local time first. The
-    // offset is fixed per run, so rows can land an hour off local midnight on the
-    // two DST transition days a year. Daily totals stay complete.
-    const tzOffsetSec = -new Date(context.nowMs).getTimezoneOffset() * 60;
-
     let rows: DevinUsageRow[];
     try {
       rows = await collectDevinRows({
         homeDir: context.homeDir,
         cutoffMs: context.cutoffMs,
-        tzOffsetSec,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -60,7 +54,7 @@ function applyRow(accumulator: UsageAccumulator, row: DevinUsageRow): void {
     cacheWriteTokens: row.cacheWriteTokens,
   };
   accumulator.record({
-    dayKey: localDayKey(row.hourIndex * 3600 * 1000),
+    dayKey: localDayKey(row.timestampSec * 1000),
     sessionId: row.sessionId ?? undefined,
     model: row.model ?? undefined,
     delta,

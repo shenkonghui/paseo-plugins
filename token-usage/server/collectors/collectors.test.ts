@@ -134,7 +134,7 @@ describe("OpencodeCollector", () => {
 });
 
 describe("DevinCollector", () => {
-  it("aggregates session metrics into hour buckets with model attribution", async () => {
+  it("aggregates same-second session metrics with model attribution", async () => {
     const dbDir = path.join(dataHome, "devin", "cli");
     fs.mkdirSync(dbDir, { recursive: true });
     const Database = await sqliteModule();
@@ -158,13 +158,12 @@ describe("DevinCollector", () => {
     const result = await collectDevin({
       homeDir: tempRoot,
       cutoffMs: localMidnight(nowMs),
-      tzOffsetSec: 0,
     });
     expect(result).toEqual([
       {
         sessionId: "s1",
         model: "devin-model",
-        hourIndex: Math.floor(createdSec / 3600),
+        timestampSec: createdSec,
         requests: 2,
         inputTokens: 30,
         outputTokens: 3,
@@ -179,6 +178,45 @@ describe("DevinCollector", () => {
     expect(agent.totals.requests).toBe(2);
     expect(agent.totals.inputTokens).toBe(30);
     expect(agent.models?.[0]?.model).toBe("devin-model");
+  });
+
+  it("buckets calls on the host-local calendar day", async () => {
+    // A call at 18:24 in UTC+8: adding the timezone offset before localDayKey
+    // (which applies it again) pushed it onto the following day.
+    const previousTZ = process.env.TZ;
+    const tzDataHome = path.join(tempRoot, "tz-data");
+    process.env.TZ = "Asia/Shanghai";
+    try {
+      const dbDir = path.join(tzDataHome, "devin", "cli");
+      fs.mkdirSync(dbDir, { recursive: true });
+      const Database = await sqliteModule();
+      const db = new Database(path.join(dbDir, "sessions.db"));
+      db.exec(`create table sessions (id text primary key, model text, last_activity_at integer);
+        create table message_nodes (session_id text, created_at integer, chat_message text)`);
+      const createdSec = Math.floor(
+        new Date("2026-10-17T18:24:25+08:00").getTime() / 1000,
+      );
+      db.prepare("insert into sessions values (?, ?, ?)").run("s1", "devin-model", createdSec);
+      db.prepare("insert into message_nodes values (?, ?, ?)").run(
+        "s1",
+        createdSec,
+        JSON.stringify({ metadata: { metrics: { input_tokens: 100, output_tokens: 5 } } }),
+      );
+      db.close();
+
+      process.env.XDG_DATA_HOME = tzDataHome;
+      const agent = await new DevinCollector().collect(
+        makeContext(new Date("2026-10-18T12:00:00+08:00").getTime()),
+      );
+
+      expect(agent.days).toHaveLength(1);
+      expect(agent.days[0].date).toBe("2026-10-17");
+      expect(agent.days[0].inputTokens).toBe(100);
+    } finally {
+      if (previousTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTZ;
+      process.env.XDG_DATA_HOME = dataHome;
+    }
   });
 });
 

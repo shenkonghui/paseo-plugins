@@ -16,7 +16,7 @@ import {
 export interface DevinUsageRow {
   sessionId: string | null;
   model: string | null;
-  hourIndex: number;
+  timestampSec: number;
   requests: number;
   inputTokens: number;
   outputTokens: number;
@@ -27,11 +27,11 @@ export interface DevinUsageRow {
 export interface DevinCollectRequest {
   homeDir: string;
   cutoffMs: number;
-  tzOffsetSec: number;
 }
 
 // The metrics JSON is extracted once into a materialized CTE: re-parsing the full
 // multi-kilobyte `chat_message` per summed field dominated the whole query.
+// Group by exact timestamp: hour buckets can straddle a local midnight in half-hour zones.
 const USAGE_QUERY = `
   with calls as materialized (
     select
@@ -43,7 +43,7 @@ const USAGE_QUERY = `
   )
   select
     session_id as session_id,
-    (created_at + ?) / 3600 as hour_index,
+    created_at as timestamp_sec,
     count(*) as requests,
     sum(json_extract(metrics, '$.input_tokens')) as input_tokens,
     sum(json_extract(metrics, '$.output_tokens')) as output_tokens,
@@ -51,7 +51,7 @@ const USAGE_QUERY = `
     sum(json_extract(metrics, '$.cache_creation_tokens')) as cache_write_tokens
   from calls
   where metrics is not null
-  group by session_id, hour_index
+  group by session_id, created_at
 `;
 
 const SESSION_QUERY = `
@@ -72,13 +72,13 @@ export async function collectDevinRows(request: DevinCollectRequest): Promise<De
         models.set(id, model);
       }
     }
-    const rows = db.prepare(USAGE_QUERY).all(cutoffSec, request.tzOffsetSec);
+    const rows = db.prepare(USAGE_QUERY).all(cutoffSec);
     return rows.map((row: SqliteRow) => {
       const sessionId = readString(row.session_id) ?? null;
       return {
         sessionId,
         model: sessionId ? (models.get(sessionId) ?? null) : null,
-        hourIndex: readNumber(row.hour_index) ?? 0,
+        timestampSec: readNumber(row.timestamp_sec) ?? 0,
         requests: readNumber(row.requests) ?? 0,
         inputTokens: readNumber(row.input_tokens) ?? 0,
         outputTokens: readNumber(row.output_tokens) ?? 0,
