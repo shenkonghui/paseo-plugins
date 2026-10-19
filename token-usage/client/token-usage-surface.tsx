@@ -6,6 +6,7 @@ import {
   type PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
 import { AgentSummary } from "./agent-summary";
+import { DiskUsageSection } from "./disk-usage";
 import { TokenBarChart } from "./bar-chart";
 import { formatCount, formatTokensDetailed, formatUsd } from "./format";
 import { combineAgentWindows } from "./rollup";
@@ -216,6 +217,8 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
             onToggle={(enabled) => handleToggleAgent(agent.agentId, enabled)}
           />
         ))}
+
+        <DiskUsageSection theme={theme} />
       </ScrollView>
     </View>
   );
