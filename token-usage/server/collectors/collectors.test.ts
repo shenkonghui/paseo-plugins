@@ -11,6 +11,7 @@ import { DevinCollector } from "./devin.js";
 import { collectDevinRows as collectDevin } from "./devin-worker.js";
 import { OpencodeCollector } from "./opencode.js";
 import { PiCollector } from "./pi.js";
+import { QoderCollector } from "./qoder.js";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-fixtures-"));
 const dataHome = path.join(tempRoot, "data");
@@ -247,6 +248,92 @@ describe("CodebuddyCollector", () => {
     expect(agent.hours).toEqual([
       expect.objectContaining({ hour: 1, totalTokens: 17, requests: 2, sessions: 1 }),
     ]);
+  });
+});
+
+describe("QoderCollector", () => {
+  it("merges the CN and intl transcripts, counts subagents, and dedupes requests", async () => {
+    const nowMs = Date.now();
+    const todayTs = new Date(localMidnight(nowMs) + 3_600_000).toISOString();
+    const oldTs = new Date(nowMs - 40 * 86_400_000).toISOString();
+    const line = (usage: object, options?: { sessionId?: string; timestamp?: string }) =>
+      JSON.stringify({
+        type: "assistant",
+        timestamp: options?.timestamp ?? todayTs,
+        sessionId: options?.sessionId ?? "session-a",
+        message: { model: "dfmodel", usage },
+      });
+
+    const cnProjects = path.join(tempRoot, ".qoder-cn", "projects", "proj");
+    const subagents = path.join(cnProjects, "session-a", "subagents");
+    fs.mkdirSync(subagents, { recursive: true });
+    fs.writeFileSync(
+      path.join(cnProjects, "session-a.jsonl"),
+      [
+        JSON.stringify({ type: "user", timestamp: todayTs }),
+        line({
+          input_tokens: 100,
+          output_tokens: 10,
+          cache_read_input_tokens: 5,
+          cache_creation_input_tokens: 2,
+          credits: 0.5,
+          billable: true,
+          request_id: "r1",
+        }),
+        // 免费模型：token 与请求照计，积分不计入账单口径。
+        line({ input_tokens: 7, output_tokens: 1, credits: 0.9, billable: false, request_id: "r2" }),
+        // 同一个 request_id 的重试行只算一次。
+        line({ input_tokens: 100, output_tokens: 10, credits: 0.5, billable: true, request_id: "r1" }),
+        // 窗口之外（40 天前）的调用必须跳过。
+        line(
+          { input_tokens: 999, output_tokens: 999, credits: 9, billable: true, request_id: "r-old" },
+          { timestamp: oldTs },
+        ),
+      ].join("\n"),
+    );
+    // 子 agent 的 transcript 写父会话 id，用量计入同一个会话。
+    fs.writeFileSync(
+      path.join(subagents, "agent-aExplore-1.jsonl"),
+      line({ input_tokens: 3, output_tokens: 2, credits: 0.1, billable: true, request_id: "r3" }),
+    );
+    // 国际版（~/.qoder）是另一个数据根，合并成同一个 agent。
+    const intlProjects = path.join(tempRoot, ".qoder", "projects", "proj2");
+    fs.mkdirSync(intlProjects, { recursive: true });
+    fs.writeFileSync(
+      path.join(intlProjects, "session-b.jsonl"),
+      line(
+        { input_tokens: 1, output_tokens: 1, credits: 0.2, billable: true, request_id: "r4" },
+        { sessionId: "session-b" },
+      ),
+    );
+
+    const agent = await new QoderCollector().collect(makeContext(nowMs));
+
+    expect(agent.status).toBe("available");
+    expect(agent.totals.inputTokens).toBe(111);
+    expect(agent.totals.outputTokens).toBe(14);
+    // Qoder 不写 total_tokens，按 input + output 汇总。
+    expect(agent.totals.totalTokens).toBe(125);
+    expect(agent.totals.cacheReadTokens).toBe(5);
+    expect(agent.totals.cacheWriteTokens).toBe(2);
+    expect(agent.totals.requests).toBe(4);
+    // 只累计 billable 的 credits（0.5 + 0.1 + 0.2），免费模型的 0.9 不计入。
+    expect(agent.totals.costCredits).toBeCloseTo(0.8, 6);
+    expect(agent.sessions).toBe(2);
+    expect(agent.models?.[0]?.model).toBe("dfmodel");
+  });
+
+  it("reports unavailable when neither data root exists", async () => {
+    const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-qoder-"));
+    try {
+      const agent = await new QoderCollector().collect({
+        ...makeContext(Date.now()),
+        homeDir: isolated,
+      });
+      expect(agent.status).toBe("unavailable");
+    } finally {
+      fs.rmSync(isolated, { recursive: true, force: true });
+    }
   });
 });
 

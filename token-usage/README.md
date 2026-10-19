@@ -21,6 +21,10 @@ Token 监控面板:读取本机各 agent CLI 自己的本地数据,汇总展示 
 | Pi | `~/.pi/agent/sessions/**/*.jsonl` | JSONL 行扫描(`message.usage`) |
 | OpenCode | XDG data 下 opencode 的 SQLite | `node:sqlite` 只读 keyset 分页 |
 | Devin | XDG data 下 `devin/cli/sessions.db` | `node:sqlite` 只读物化 CTE 聚合(2GB 级库,一次扫描) |
+| Qoder | `~/.qoder-cn/projects/**/*.jsonl`(国内版) + `~/.qoder/projects/**/*.jsonl`(国际版) | JSONL 行扫描(`message.usage`,含 `<uuid>/subagents/*.jsonl`,按 `request_id` 去重) |
+
+> **Qoder 的 token 需要显式开启上报**:Qoder CLI 默认把 token 清零,只写 Credits。要让面板拿到真实 token,需给 CLI 进程加上环境变量——国内版 `QODERCN_EXPOSE_TOKEN_USAGE=1`,国际版 `QODER_EXPOSE_TOKEN_USAGE=1`(前缀不可互换),例如写进 `~/.paseo/config.json` 的 `agents.providers["qoder-cn"].env`。未开启时该 agent 仍会显示请求数、会话数和积分,但 token 维度为 0。
+> Qoder 的 Credits(积分)按**账单口径**统计:只累计 `billable !== false` 的请求,免费模型的请求(token 与请求数照计)不计入积分。
 
 采集在插件 server 进程内串行执行,yield gate 限制每个同步步的事件循环占用。按「所选窗口(今天 / 近 7 天 / 近 30 天) + 关闭采集的 agent 集合」分别采集并各自缓存 1 小时;快照落盘(`~/.paseo/plugin-cache/token-usage/usage-cache.json`,重启后秒开):打开页面只读缓存,过期时显示「缓存已过期」;只有点击 Surface 的「刷新」按钮才强制重新采集,不做任何后台主动采集。默认窗口是「今天」。
 
@@ -34,6 +38,7 @@ Token 监控面板:读取本机各 agent CLI 自己的本地数据,汇总展示 
 | Pi | `~/.pi` | 删除 30 天前的 `agent/sessions/**/*.jsonl` |
 | OpenCode | `$XDG_DATA_HOME/opencode` | 删除 `session_v2` 中 30 天前的会话(外键级联删消息等),再 `VACUUM` 回收空间 |
 | Devin | `$XDG_DATA_HOME/devin` | 删除 `sessions` 中 30 天前的会话及其子表行,再 `VACUUM` 回收空间 |
+| Qoder | `~/.qoder-cn` + `~/.qoder`(两个数据根合并统计) | 删除 30 天前的 `projects/**/*.jsonl` 及其同名附属目录(`<uuid>/`,含 `subagents/`) |
 
 「过期」以会话最后一次活动时间为准(文件型取文件 mtime,数据库型取 `time_updated` / `last_activity_at`),因此 30 天内活跃过的会话不会被删。已在运行中的 agent 会话(包括当前会话)通常属于最近活动,不会被清理。数据库型 agent 的「预计可释放」按会话数比例估算,清理后给出 VACUUM 前后的实际差值;Devin 的库接近 GB 级,VACUUM 可能耗时较久。
 

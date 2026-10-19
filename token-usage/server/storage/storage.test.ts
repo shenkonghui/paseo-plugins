@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createYieldGate } from "../yield-gate.js";
 import { createFileSessionStorage } from "./file-sessions.js";
+import { createQoderStorage } from "./qoder-sessions.js";
 import { DevinStorage, OpencodeStorage } from "./sqlite-sessions.js";
 import type { StorageContext } from "./types.js";
 
@@ -108,6 +109,53 @@ describe("CodeBuddy file storage", () => {
     const result = await storage.cleanup(context(Date.now()));
     expect(result.status).toBe("skipped");
     expect(result.removedSessions).toBe(0);
+  });
+});
+
+describe("Qoder merged file storage", () => {
+  const storage = createQoderStorage();
+
+  it("sums the CN and intl roots and cleans stale sessions in both", async () => {
+    const cnRoot = path.join(tempRoot, ".qoder-cn");
+    const cnProjects = path.join(cnRoot, "projects", "proj");
+    const intlRoot = path.join(tempRoot, ".qoder");
+    const intlProjects = path.join(intlRoot, "projects", "proj2");
+    fs.mkdirSync(cnProjects, { recursive: true });
+    fs.mkdirSync(intlProjects, { recursive: true });
+    fs.writeFileSync(path.join(cnProjects, "old.jsonl"), "x".repeat(200));
+    fs.writeFileSync(path.join(cnProjects, "recent.jsonl"), "z".repeat(100));
+    fs.writeFileSync(path.join(intlProjects, "intl.jsonl"), "w".repeat(50));
+    ageFile(path.join(cnProjects, "old.jsonl"), 40);
+
+    const nowMs = Date.now();
+    const measured = await storage.measure(context(nowMs));
+    expect(measured.status).toBe("available");
+    // 两个数据根都计入，并分别展示。
+    expect(measured.paths).toEqual([cnRoot, intlRoot]);
+    expect(measured.sessionCount).toBe(3);
+    expect(measured.staleSessionCount).toBe(1);
+    expect(measured.sessionBytes).toBe(350);
+    expect(measured.staleSessionBytes).toBe(200);
+    expect(measured.totalBytes).toBeGreaterThanOrEqual(350);
+
+    const result = await storage.cleanup(context(nowMs));
+    expect(result.status).toBe("cleaned");
+    expect(result.removedSessions).toBe(1);
+    expect(result.freedBytes).toBe(200);
+    expect(fs.existsSync(path.join(cnProjects, "old.jsonl"))).toBe(false);
+    expect(fs.existsSync(path.join(cnProjects, "recent.jsonl"))).toBe(true);
+    expect(fs.existsSync(path.join(intlProjects, "intl.jsonl"))).toBe(true);
+  });
+
+  it("reports unavailable when neither data root exists", async () => {
+    const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-qoder-storage-"));
+    try {
+      const measured = await storage.measure({ ...context(Date.now()), homeDir: isolated });
+      expect(measured.status).toBe("unavailable");
+      expect(measured.paths).toHaveLength(2);
+    } finally {
+      fs.rmSync(isolated, { recursive: true, force: true });
+    }
   });
 });
 

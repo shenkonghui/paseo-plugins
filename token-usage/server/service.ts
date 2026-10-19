@@ -8,6 +8,7 @@ import { CodebuddyCollector } from "./collectors/codebuddy.js";
 import { DevinCollector } from "./collectors/devin.js";
 import { OpencodeCollector } from "./collectors/opencode.js";
 import { PiCollector } from "./collectors/pi.js";
+import { QoderCollector } from "./collectors/qoder.js";
 import { windowCutoffMs } from "./day-window.js";
 import { unavailableAgent } from "./counters.js";
 import { createYieldGate } from "./yield-gate.js";
@@ -31,6 +32,7 @@ export function createTokenUsageCollectors(): TokenUsageCollector[] {
     new PiCollector(),
     new OpencodeCollector(),
     new DevinCollector(),
+    new QoderCollector(),
   ];
 }
 

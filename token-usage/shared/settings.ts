@@ -2,7 +2,7 @@ import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 
 /** 支持的 agent（与 shared/rpc.ts 的 agentId 保持一致）。 */
-export const TOKEN_USAGE_AGENT_IDS = ["codebuddy", "pi", "opencode", "devin"] as const;
+export const TOKEN_USAGE_AGENT_IDS = ["codebuddy", "pi", "opencode", "devin", "qoder"] as const;
 
 export type TokenUsageAgentId = (typeof TOKEN_USAGE_AGENT_IDS)[number];
 

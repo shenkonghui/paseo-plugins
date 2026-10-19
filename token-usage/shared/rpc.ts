@@ -30,7 +30,7 @@ export const tokenUsageModelSchema = z.object({
   ...tokenUsageCountersSchema.shape,
 });
 
-export const tokenUsageAgentIdSchema = z.enum(["codebuddy", "pi", "opencode", "devin"]);
+export const tokenUsageAgentIdSchema = z.enum(["codebuddy", "pi", "opencode", "devin", "qoder"]);
 
 export const tokenUsageAgentSchema = z.object({
   agentId: tokenUsageAgentIdSchema,

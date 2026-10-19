@@ -1,5 +1,6 @@
 import path from "node:path";
 import { createFileSessionStorage } from "./file-sessions.js";
+import { createQoderStorage } from "./qoder-sessions.js";
 import { DevinStorage, OpencodeStorage } from "./sqlite-sessions.js";
 import type { TokenUsageStorageTarget } from "./types.js";
 
@@ -25,6 +26,7 @@ export function createStorageTargets(): TokenUsageStorageTarget[] {
     }),
     new OpencodeStorage(),
     new DevinStorage(),
+    createQoderStorage(),
   ];
 }
 
