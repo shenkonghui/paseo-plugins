@@ -33,7 +33,7 @@
 
 每个面板针对一个 workspace（内容是其当前活跃 agent 的会话）：
 
-- 头部：状态色点 + **workspace 名** + `agent · 状态`；自绘模式下有「打开」（跳原生会话）与「移除」；workspace 里没有 agent 时显示「无 agent」。
+- 头部：状态色点 + **workspace 名** + `agent · 状态`；**「打开」在 app 主界面打开该 workspace**（`navigation.openWorkspace({ workspaceId })`，流 / 内嵌模式都显示，且没有 agent 的 workspace 也能打开）与「移除」；workspace 里没有 agent 时显示「无 agent」。
 - 中部：实时对话流，自动滚到底部。数据与原生会话同一份 `projected` 投影，渲染为**结构化条目**：
   - 用户 / assistant / 思考（斜体弱化）文本支持**轻量 markdown 渲染**：标题、代码块（带语言标签 + 「复制」按钮）、有序 / 无序列表（支持缩进嵌套）、引用、`---` 分隔线、`**粗体**`、`*斜体*`、`~~删除线~~`、行内 `code`、可点击链接（不引入额外依赖；`_`/`__` 变体故意不支持，避免误伤 `some_var_name` 之类的标识符）；
   - **思考（thinking）**单独成卡片（描边 + 浅底 + 斜体灰字）：**限高 120px + 内部滚动**、可点击折叠，不会把整条流一直往下推；**连续的思考会合并到同一张卡片**（对齐 daemon 的 `reasoning_merge` 语义）；
@@ -53,7 +53,7 @@
 
 ## 5. 内嵌原生会话（web / Electron，可选）
 
-每个面板可在两种视图间切换（头部按钮「内嵌 / 流」）：
+每个面板可在两种视图间切换（头部按钮「内嵌 / 流」）；**两种视图下头部都有「打开」**，用于在 app 主界面打开该 workspace：
 
 - **内嵌**：用 `<iframe>` 加载 `/h/<serverId>/agent/<agentId>`（`buildAgentDeepLinkRoute`，agentId = 该 workspace 当前活跃 agent），即**真正的原生会话**，自带的输入框/权限弹窗/文件 diff 全都在。
 - **流**：上面 4 节的自绘对话流（原生平台与加载失败时的回退）。

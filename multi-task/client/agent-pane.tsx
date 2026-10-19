@@ -299,10 +299,11 @@ export function AgentPane({
     [],
   );
 
+  // 「打开」：在 app 主界面打开该 workspace（不要求有 agent，流 / 内嵌模式都能用）。
   const handleOpen = useCallback(() => {
     onActivate();
-    if (agentId) navigation?.openAgent({ agentId });
-  }, [onActivate, navigation, agentId]);
+    navigation?.openWorkspace?.({ workspaceId: view.workspaceId });
+  }, [onActivate, navigation, view.workspaceId]);
 
   const handleRemove = useCallback(() => {
     onActivate();
@@ -400,10 +401,10 @@ export function AgentPane({
             <Text style={styles.iconButtonText}>{embedded ? "流" : "内嵌"}</Text>
           </Pressable>
         ) : null}
-        {!embedded && agentId != null ? (
+        {navigation ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="打开完整会话"
+            accessibilityLabel="打开 workspace"
             onPress={handleOpen}
             style={styles.iconButton}
           >
