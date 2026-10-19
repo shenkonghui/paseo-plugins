@@ -6,7 +6,7 @@ import {
   type PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
 import { AgentSummary } from "./agent-summary";
-import { DiskUsageSection } from "./disk-usage";
+import { DiskUsageEntry } from "./disk-usage";
 import { TokenBarChart } from "./bar-chart";
 import { formatCount, formatTokensDetailed, formatUsd } from "./format";
 import { combineAgentWindows } from "./rollup";
@@ -218,7 +218,7 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
           />
         ))}
 
-        <DiskUsageSection theme={theme} />
+        <DiskUsageEntry theme={theme} />
       </ScrollView>
     </View>
   );
