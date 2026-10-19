@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { TokenUsageAgent } from "../types.js";
 import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
-import { localDayKey } from "../day-window.js";
+import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
 import type { TranscriptFile } from "../transcript-files.js";
 import { firstNumber, listTranscriptFiles, parseJsonLine, readLines } from "../transcript-files.js";
@@ -71,6 +71,7 @@ export class CodebuddyCollector implements TokenUsageCollector {
         }
         accumulator.record({
           dayKey: localDayKey(timestamp),
+          hourKey: timestamp >= context.todayStartMs ? localHourKey(timestamp) : undefined,
           sessionId: path.relative(root, file.filePath),
           model: entry?.providerData?.model,
           delta: toUsageDelta(usage),

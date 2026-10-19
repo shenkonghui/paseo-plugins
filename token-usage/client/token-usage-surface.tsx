@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   useRpc,
+  useSettings,
   type PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
 import { AgentSummary } from "./agent-summary";
@@ -9,7 +10,8 @@ import { TokenBarChart } from "./bar-chart";
 import { formatCount, formatTokensDetailed, formatUsd } from "./format";
 import { combineAgentWindows } from "./rollup";
 import { TOKEN_USAGE_WINDOW_OPTIONS, type TokenUsageWindowDays } from "./types";
-import { tokenUsageListRpc, type TokenUsageListOutput, type TokenUsageQoderQuota } from "../shared/rpc";
+import { agentCollectionSettings } from "../shared/settings";
+import { tokenUsageListRpc, type TokenUsageListOutput } from "../shared/rpc";
 
 type Theme = PluginSurfaceProps["theme"];
 
@@ -17,7 +19,13 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
   const { theme } = props;
   const styles = useMemo(() => useStyles(theme), [theme]);
   const listUsage = useRpc(tokenUsageListRpc);
-  const [windowDays, setWindowDays] = useState<TokenUsageWindowDays>(7);
+  // 默认展示当天用量（切换器仍可切到近 7 / 30 天）。
+  const [windowDays, setWindowDays] = useState<TokenUsageWindowDays>(1);
+  const agentSettings = useSettings(agentCollectionSettings);
+  const disabledAgents = useMemo(
+    () => new Set(agentSettings.status === "ready" ? agentSettings.values.disabled : []),
+    [agentSettings],
+  );
 
   const [payload, setPayload] = useState<TokenUsageListOutput | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,21 +34,31 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
   // Recomputing on payload identity keeps a fetched snapshot stable across re-renders.
   const nowMs = useMemo(() => Date.now(), [payload]);
 
+  const requestSeq = useRef(0);
+
   const fetchPayload = useCallback(
     (forceRefresh: boolean) => {
+      const seq = ++requestSeq.current;
       setLoading(true);
       setError(null);
-      listUsage({ forceRefresh })
+      listUsage({ forceRefresh, windowDays })
         .then((result) => {
+          // 切换窗口时旧请求可能后到，丢弃它。
+          if (seq !== requestSeq.current) {
+            return;
+          }
           setPayload(result);
           setLoading(false);
         })
         .catch((failure: unknown) => {
+          if (seq !== requestSeq.current) {
+            return;
+          }
           setError(failure instanceof Error ? failure.message : String(failure));
           setLoading(false);
         });
     },
-    [listUsage],
+    [listUsage, windowDays],
   );
 
   const handleRetry = useCallback(() => {
@@ -60,17 +78,46 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
     [payload, windowDays, nowMs],
   );
 
-  const chartDays = useMemo(
-    () =>
-      combined
-        ? combined.days.map((day) => ({ date: day.date, totalTokens: day.counters.totalTokens }))
-        : [],
-    [combined],
-  );
+  // 「今天」按小时画（0 点 → 当前小时），其它窗口按天。
+  const chartDays = useMemo(() => {
+    if (!combined) {
+      return [];
+    }
+    if (windowDays === 1) {
+      const currentHour = new Date(nowMs).getHours();
+      return combined.hours
+        .filter((entry) => entry.hour <= currentHour)
+        .map((entry) => ({
+          date: `${`${entry.hour}`.padStart(2, "0")}:00`,
+          totalTokens: entry.counters.totalTokens,
+        }));
+    }
+    return combined.days.map((day) => ({ date: day.date, totalTokens: day.counters.totalTokens }));
+  }, [combined, windowDays, nowMs]);
 
   const handleSelectWindow = useCallback((days: TokenUsageWindowDays) => {
     setWindowDays(days);
   }, []);
+
+  // 开关写入宿主侧设置；关闭的 agent 服务端会跳过采集（仍返回占位条目）。
+  const handleToggleAgent = useCallback(
+    (agentId: TokenUsageListOutput["agents"][number]["agentId"], enabled: boolean) => {
+      if (agentSettings.status !== "ready") {
+        return;
+      }
+      const current = agentSettings.values.disabled;
+      const next = enabled
+        ? current.filter((id) => id !== agentId)
+        : [...current.filter((id) => id !== agentId), agentId];
+      void agentSettings.save({ disabled: next }, agentSettings.revision).then((ok) => {
+        // 开关变化会改变缓存 key：重新取一次（新 key 没缓存就当场采集）。
+        if (ok) {
+          fetchPayload(false);
+        }
+      });
+    },
+    [agentSettings, fetchPayload],
+  );
 
   if (loading && !payload) {
     return (
@@ -154,14 +201,20 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
 
         {availableAgents.length > 0 ? (
           <View style={styles.card}>
+            <Text style={styles.muted}>{windowDays === 1 ? "今天 · 按小时" : "按天"}</Text>
             <TokenBarChart days={chartDays} theme={theme} />
           </View>
         ) : null}
 
-        {payload.qoderQuota ? <QoderQuotaCard quota={payload.qoderQuota} styles={styles} /> : null}
-
         {combined.agents.map(({ agent, window }) => (
-          <AgentSummary key={agent.agentId} agent={agent} window={window} theme={theme} />
+          <AgentSummary
+            key={agent.agentId}
+            agent={agent}
+            window={window}
+            theme={theme}
+            enabled={!disabledAgents.has(agent.agentId)}
+            onToggle={(enabled) => handleToggleAgent(agent.agentId, enabled)}
+          />
         ))}
       </ScrollView>
     </View>
@@ -245,47 +298,6 @@ function Metric({
       <Text style={styles.metricLabel}>{label}</Text>
     </View>
   );
-}
-
-function formatQuotaBucketText(bucket: { used: number; remaining: number; total: number }): string {
-  return `${formatCount(bucket.used)} / ${formatCount(bucket.total)}（余 ${formatCount(bucket.remaining)}）`;
-}
-
-function QoderQuotaCard({
-  quota,
-  styles,
-}: {
-  quota: TokenUsageQoderQuota;
-  styles: TokenUsageStyles;
-}) {
-  return (
-    <View style={styles.card}>
-      <View style={styles.headerRow}>
-        <Text style={styles.name}>Qoder 积分额度</Text>
-        {quota.isQuotaExceeded ? (
-          <Text style={styles.statusBadge}>额度已用尽</Text>
-        ) : null}
-      </View>
-      <View style={styles.metricsRow}>
-        <Metric styles={styles} label="套餐积分" value={formatQuotaBucketText(quota.plan)} />
-        {quota.addOn ? (
-          <Metric styles={styles} label="加油包" value={formatQuotaBucketText(quota.addOn)} />
-        ) : null}
-        {quota.expiresAt ? (
-          <Metric styles={styles} label="到期时间" value={formatDay(quota.expiresAt)} />
-        ) : null}
-      </View>
-      <Text style={styles.muted}>数据来自 Qoder CLI 日志，更新于 {formatFetchedAt(quota.observedAt)}</Text>
-    </View>
-  );
-}
-
-function formatDay(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
-    return iso;
-  }
-  return `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, "0")}-${`${date.getDate()}`.padStart(2, "0")}`;
 }
 
 function useStyles(theme: Theme): TokenUsageStyles {

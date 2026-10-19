@@ -6,6 +6,12 @@ export function localDayKey(timestampMs: number): string {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
+/** `YYYY-MM-DDTHH` in the host's local calendar，用于「今天」的小时桶。 */
+export function localHourKey(timestampMs: number): string {
+  const hour = `${new Date(timestampMs).getHours()}`.padStart(2, "0");
+  return `${localDayKey(timestampMs)}T${hour}`;
+}
+
 /** Start of the oldest day in a window of `days` calendar days ending today. */
 export function windowCutoffMs(nowMs: number, days: number): number {
   const date = new Date(nowMs);

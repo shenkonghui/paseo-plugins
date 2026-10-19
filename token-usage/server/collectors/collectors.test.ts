@@ -29,6 +29,7 @@ function makeContext(nowMs: number) {
     homeDir: tempRoot,
     nowMs,
     cutoffMs: windowCutoffMs(nowMs, 30),
+    todayStartMs: windowCutoffMs(nowMs, 1),
     windowDays: 30,
     logger: console,
     gate: createYieldGate(),
@@ -242,6 +243,10 @@ describe("CodebuddyCollector", () => {
     expect(agent.totals.inputTokens).toBe(11);
     expect(agent.totals.outputTokens).toBe(6);
     expect(agent.sessions).toBe(1);
+    // 01:00 当地时间的调用应落进小时桶。
+    expect(agent.hours).toEqual([
+      expect.objectContaining({ hour: 1, totalTokens: 17, requests: 2, sessions: 1 }),
+    ]);
   });
 });
 

@@ -45,13 +45,21 @@ export interface TokenUsageModel {
   costCredits?: number;
 }
 
+/** 当天按小时的桶（只在「今天」窗口有值）。 */
+export interface TokenUsageHour extends TokenUsageCounters {
+  hour: number;
+  sessions: number;
+}
+
 export interface TokenUsageAgent {
   agentId: TokenUsageAgentId;
   displayName: string;
-  status: "available" | "unavailable" | "error";
+  status: "available" | "unavailable" | "error" | "disabled";
   error: string | null;
   totals: TokenUsageCounters;
   sessions: number;
   days: TokenUsageDay[];
+  /** 当天 0-23 点的用量；只记录窗口内的「今天」。 */
+  hours: TokenUsageHour[];
   models: TokenUsageModel[];
 }

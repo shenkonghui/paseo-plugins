@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { TokenUsageAgent } from "../types.js";
 import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
-import { localDayKey } from "../day-window.js";
+import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
 import {
   openSqliteReadonly,
@@ -57,7 +57,7 @@ export class OpencodeCollector implements TokenUsageCollector {
           break;
         }
         for (const row of rows) {
-          applyRow(accumulator, row);
+          applyRow(accumulator, row, context.todayStartMs);
         }
         const last = rows[rows.length - 1]!;
         cursor = { timeCreated: readNumber(last.time_created) ?? 0, id: readString(last.id) ?? "" };
@@ -121,7 +121,7 @@ const PAGE_QUERY_WITH_CURSOR = `
   limit ?
 `;
 
-function applyRow(accumulator: UsageAccumulator, row: SqliteRow): void {
+function applyRow(accumulator: UsageAccumulator, row: SqliteRow, todayStartMs: number): void {
   const timeCreated = readNumber(row.time_created);
   if (timeCreated === undefined) {
     return;
@@ -145,6 +145,7 @@ function applyRow(accumulator: UsageAccumulator, row: SqliteRow): void {
   };
   accumulator.record({
     dayKey: localDayKey(timeCreated),
+    hourKey: timeCreated >= todayStartMs ? localHourKey(timeCreated) : undefined,
     sessionId: readString(row.session_id),
     model: readString(row.model),
     delta,

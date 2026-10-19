@@ -32,14 +32,24 @@ export interface DevinCollectRequest {
 // The metrics JSON is extracted once into a materialized CTE: re-parsing the full
 // multi-kilobyte `chat_message` per summed field dominated the whole query.
 // Group by exact timestamp: hour buckets can straddle a local midnight in half-hour zones.
+/** 最快的活动探测：sessions 只有几千行，用来判断窗口内是否可能有消息。 */
+const LATEST_ACTIVITY_QUERY = `
+  select max(last_activity_at) as latest
+  from sessions
+`;
+
 const USAGE_QUERY = `
-  with calls as materialized (
+  with recent as materialized (
+    select id from sessions where last_activity_at >= ?
+  ),
+  calls as materialized (
     select
-      session_id as session_id,
-      created_at as created_at,
-      json_extract(chat_message, '$.metadata.metrics') as metrics
-    from message_nodes
-    where created_at >= ?
+      m.session_id as session_id,
+      m.created_at as created_at,
+      json_extract(m.chat_message, '$.metadata.metrics') as metrics
+    from message_nodes m
+    join recent r on r.id = m.session_id
+    where m.created_at >= ?
   )
   select
     session_id as session_id,
@@ -64,6 +74,13 @@ export async function collectDevinRows(request: DevinCollectRequest): Promise<De
   const db = await openSqliteReadonly(databasePath);
   try {
     const cutoffSec = Math.floor(request.cutoffMs / 1000);
+
+    // 窗口内没有任何活动就直接返回：避免为「今天」去扫 1.9GB 的 message_nodes。
+    const latest = readNumber(db.prepare(LATEST_ACTIVITY_QUERY).all()[0]?.latest);
+    if (latest === undefined || latest < cutoffSec) {
+      return [];
+    }
+
     const models = new Map<string, string>();
     for (const session of db.prepare(SESSION_QUERY).all()) {
       const id = readString(session.id);
@@ -72,7 +89,7 @@ export async function collectDevinRows(request: DevinCollectRequest): Promise<De
         models.set(id, model);
       }
     }
-    const rows = db.prepare(USAGE_QUERY).all(cutoffSec);
+    const rows = db.prepare(USAGE_QUERY).all(cutoffSec, cutoffSec);
     return rows.map((row: SqliteRow) => {
       const sessionId = readString(row.session_id) ?? null;
       return {

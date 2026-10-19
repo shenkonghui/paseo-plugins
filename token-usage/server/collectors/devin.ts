@@ -1,6 +1,6 @@
 import type { TokenUsageAgent } from "../types.js";
 import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
-import { localDayKey } from "../day-window.js";
+import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
 import { collectDevinRows, type DevinUsageRow } from "./devin-worker.js";
 
@@ -29,7 +29,7 @@ export class DevinCollector implements TokenUsageCollector {
     }
 
     for (const row of rows) {
-      applyRow(accumulator, row);
+      applyRow(accumulator, row, context.todayStartMs);
       await context.gate.maybeYield();
     }
 
@@ -41,7 +41,12 @@ export class DevinCollector implements TokenUsageCollector {
   }
 }
 
-function applyRow(accumulator: UsageAccumulator, row: DevinUsageRow): void {
+function applyRow(
+  accumulator: UsageAccumulator,
+  row: DevinUsageRow,
+  todayStartMs: number,
+): void {
+  const timestampMs = row.timestampSec * 1000;
   const delta: UsageDelta = {
     requests: row.requests,
     inputTokens: row.inputTokens,
@@ -54,7 +59,8 @@ function applyRow(accumulator: UsageAccumulator, row: DevinUsageRow): void {
     cacheWriteTokens: row.cacheWriteTokens,
   };
   accumulator.record({
-    dayKey: localDayKey(row.timestampSec * 1000),
+    dayKey: localDayKey(timestampMs),
+    hourKey: timestampMs >= todayStartMs ? localHourKey(timestampMs) : undefined,
     sessionId: row.sessionId ?? undefined,
     model: row.model ?? undefined,
     delta,

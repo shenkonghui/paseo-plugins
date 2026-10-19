@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Text, View } from "react-native";
+import { Switch, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { formatCount, formatTokensDetailed, formatUsd } from "./format";
 import type { AgentWindow } from "./rollup";
@@ -11,20 +11,32 @@ interface AgentSummaryProps {
   agent: TokenUsageAgent;
   window: AgentWindow;
   theme: Theme;
+  /** 该 agent 是否开启采集。 */
+  enabled: boolean;
+  onToggle(enabled: boolean): void;
 }
 
-export function AgentSummary({ agent, window, theme }: AgentSummaryProps) {
+export function AgentSummary({ agent, window, theme, enabled, onToggle }: AgentSummaryProps) {
   const styles = useMemo(() => useStyles(theme), [theme]);
   const totals = window.totals;
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, enabled ? null : styles.cardPaused]}>
       <View style={styles.headerRow}>
-        <Text style={styles.name}>{agent.displayName}</Text>
-        {agent.status !== "available" ? (
-          <Text style={styles.statusBadge}>不可用</Text>
-        ) : null}
+        <View style={styles.headerLeft}>
+          <Text style={styles.name}>{agent.displayName}</Text>
+          {agent.status === "disabled" ? (
+            <Text style={styles.pausedBadge}>已暂停采集</Text>
+          ) : agent.status !== "available" ? (
+            <Text style={styles.statusBadge}>不可用</Text>
+          ) : null}
+        </View>
+        <Switch
+          value={enabled}
+          onValueChange={onToggle}
+          accessibilityLabel={`${agent.displayName} 采集开关`}
+        />
       </View>
-      {agent.status !== "available" && agent.error ? (
+      {agent.status !== "available" && agent.status !== "disabled" && agent.error ? (
         <Text style={styles.error}>{agent.error}</Text>
       ) : null}
       <View style={styles.metricsRow}>
@@ -84,10 +96,24 @@ function useStyles(theme: Theme) {
       padding: 12,
       gap: 8,
     },
+    cardPaused: {
+      opacity: 0.6,
+    },
     headerRow: {
       flexDirection: "row" as const,
       alignItems: "center" as const,
       justifyContent: "space-between" as const,
+      gap: 8,
+    },
+    headerLeft: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 8,
+      flexShrink: 1,
+    },
+    pausedBadge: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
     },
     name: {
       color: theme.colors.foreground,

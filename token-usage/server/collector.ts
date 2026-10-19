@@ -7,6 +7,8 @@ export interface TokenUsageCollectContext {
   nowMs: number;
   /** Start of the oldest day inside the window, host-local. */
   cutoffMs: number;
+  /** Start of today (host-local)，用来决定是否记录小时桶。 */
+  todayStartMs: number;
   windowDays: number;
   logger: TokenUsageLogger;
   gate: YieldGate;

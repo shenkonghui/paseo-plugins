@@ -3,6 +3,7 @@ import type {
   TokenUsageAgentId,
   TokenUsageCounters,
   TokenUsageDay,
+  TokenUsageHour,
   TokenUsageModel,
 } from "./types.js";
 
@@ -39,6 +40,8 @@ export interface UsageDelta {
 
 export interface UsageRecord {
   dayKey: string;
+  /** `YYYY-MM-DDTHH`；只在记录属于「今天」时提供，用于小时视图。 */
+  hourKey?: string;
   delta: UsageDelta;
   sessionId?: string;
   model?: string;
@@ -103,6 +106,7 @@ interface ModelBucket {
 /** Rolls per-call records into per-day, per-model, and overall buckets. */
 export class UsageAccumulator {
   private readonly days = new Map<string, DayBucket>();
+  private readonly hours = new Map<string, DayBucket>();
   private readonly models = new Map<string, ModelBucket>();
   private readonly sessions = new Set<string>();
   private readonly totals: UsageCounters = emptyCounters();
@@ -117,6 +121,18 @@ export class UsageAccumulator {
       this.sessions.add(input.sessionId);
     }
     this.days.set(input.dayKey, day);
+
+    if (input.hourKey) {
+      const hour = this.hours.get(input.hourKey) ?? {
+        counters: emptyCounters(),
+        sessions: new Set(),
+      };
+      addUsageTo(hour.counters, input.delta);
+      if (input.sessionId) {
+        hour.sessions.add(input.sessionId);
+      }
+      this.hours.set(input.hourKey, hour);
+    }
 
     if (input.model) {
       const bucket = this.models.get(input.model) ?? {
@@ -142,6 +158,15 @@ export class UsageAccumulator {
     const models: TokenUsageModel[] = [...this.models.values()]
       .map((bucket) => Object.assign({ model: bucket.model }, toWireCounters(bucket.counters)))
       .sort((a, b) => b.totalTokens - a.totalTokens);
+    const hours: TokenUsageHour[] = [...this.hours.entries()]
+      .map(([key, bucket]) => {
+        const hour = Number(key.slice(key.indexOf("T") + 1));
+        return Object.assign(
+          { hour: Number.isFinite(hour) ? hour : 0, sessions: bucket.sessions.size },
+          toWireCounters(bucket.counters),
+        );
+      })
+      .sort((a, b) => a.hour - b.hour);
 
     return {
       agentId: input.agentId,
@@ -151,6 +176,7 @@ export class UsageAccumulator {
       totals: toWireCounters(this.totals),
       sessions: this.sessions.size,
       days,
+      hours,
       models,
     };
   }
@@ -170,6 +196,7 @@ export function unavailableAgent(input: {
     totals: toWireCounters(emptyCounters()),
     sessions: 0,
     days: [],
+    hours: [],
     models: [],
   };
 }

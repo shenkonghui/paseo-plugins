@@ -19,6 +19,12 @@ export const tokenUsageDaySchema = z.object({
   ...tokenUsageCountersSchema.shape,
 });
 
+export const tokenUsageHourSchema = z.object({
+  hour: z.number().int().min(0).max(23),
+  sessions: z.number().int(),
+  ...tokenUsageCountersSchema.shape,
+});
+
 export const tokenUsageModelSchema = z.object({
   model: z.string(),
   ...tokenUsageCountersSchema.shape,
@@ -27,46 +33,28 @@ export const tokenUsageModelSchema = z.object({
 export const tokenUsageAgentSchema = z.object({
   agentId: z.enum(["codebuddy", "pi", "opencode", "devin"]),
   displayName: z.string(),
-  status: z.enum(["available", "unavailable", "error"]),
+  status: z.enum(["available", "unavailable", "error", "disabled"]),
   error: z.string().nullable(),
   totals: tokenUsageCountersSchema,
   sessions: z.number().int(),
   days: z.array(tokenUsageDaySchema),
+  /** 当天 0-23 点的用量；「今天」窗口的小时视图使用。 */
+  hours: z.array(tokenUsageHourSchema).default([]),
   models: z.array(tokenUsageModelSchema),
-});
-
-export const tokenUsageQuotaBucketSchema = z.object({
-  total: z.number(),
-  used: z.number(),
-  remaining: z.number(),
-  percentage: z.number().nullable(),
-});
-
-export const tokenUsageQoderQuotaSchema = z.object({
-  userType: z.string(),
-  usageType: z.string(),
-  isQuotaExceeded: z.boolean(),
-  totalUsagePercentage: z.number().nullable(),
-  /** Plan expiry, ISO string parsed from the API's epoch millis. */
-  expiresAt: z.string().nullable(),
-  plan: tokenUsageQuotaBucketSchema,
-  addOn: tokenUsageQuotaBucketSchema.nullable(),
-  /** ISO mtime of the log file the snapshot was parsed from. */
-  observedAt: z.string(),
 });
 
 export const tokenUsageListRpc = defineRpc({
   name: "token-usage.list",
   input: z.object({
     forceRefresh: z.boolean().default(false),
+    /** 采集窗口（天）。按所选窗口采集，避免为了「今天」也去扫 30 天。 */
+    windowDays: z.union([z.literal(1), z.literal(7), z.literal(30)]).default(30),
   }),
   output: z.object({
     fetchedAt: z.string(),
     /** Host-local days of history the snapshot covers, ending today. */
     rangeDays: z.number().int(),
     agents: z.array(tokenUsageAgentSchema),
-    /** Qoder subscription credits quota, parsed from the qoder-cn CLI's own logs; null when unknown. */
-    qoderQuota: tokenUsageQoderQuotaSchema.nullable().default(null),
     /** True when the served snapshot is older than the TTL. */
     stale: z.boolean().default(false),
   }),
@@ -74,7 +62,7 @@ export const tokenUsageListRpc = defineRpc({
 
 export type TokenUsageCounters = z.output<typeof tokenUsageCountersSchema>;
 export type TokenUsageDay = z.output<typeof tokenUsageDaySchema>;
+export type TokenUsageHour = z.output<typeof tokenUsageHourSchema>;
 export type TokenUsageModel = z.output<typeof tokenUsageModelSchema>;
 export type TokenUsageAgent = z.output<typeof tokenUsageAgentSchema>;
-export type TokenUsageQoderQuota = z.output<typeof tokenUsageQoderQuotaSchema>;
 export type TokenUsageListOutput = z.output<typeof tokenUsageListRpc.output>;

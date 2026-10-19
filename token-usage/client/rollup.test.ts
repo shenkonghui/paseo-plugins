@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TokenUsageAgent, TokenUsageDay } from "../shared/rpc";
+import type { TokenUsageAgent, TokenUsageDay, TokenUsageHour } from "../shared/rpc";
 import type { TokenUsageWindowDays } from "./types";
 import { agentWindow, combineAgentWindows, localDateKey, windowStartDateKey } from "./rollup";
 
@@ -30,6 +30,7 @@ function agent(
     totals: { inputTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 },
     sessions: 0,
     days,
+    hours: [],
     models: [],
   };
 }
@@ -101,5 +102,31 @@ describe("combineAgentWindows", () => {
     expect(combined.totals.totalTokens).toBe(11);
     expect(combined.totals.requests).toBe(2);
     expect(combined.agents).toHaveLength(2);
+  });
+
+  it("merges hourly buckets across agents into a 24-slot series", () => {
+    const hour = (value: number, totalTokens: number): TokenUsageHour => ({
+      hour: value,
+      sessions: 1,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens,
+      requests: 1,
+    });
+    const first: TokenUsageAgent = {
+      ...agent([day("2026-10-14", {})]),
+      hours: [hour(9, 5), hour(10, 2)],
+    };
+    const second: TokenUsageAgent = {
+      ...agent([day("2026-10-14", {})]),
+      hours: [hour(9, 3)],
+    };
+
+    const combined = combineAgentWindows([first, second], 1, NOW);
+
+    expect(combined.hours).toHaveLength(24);
+    expect(combined.hours[9]!.counters.totalTokens).toBe(8);
+    expect(combined.hours[10]!.counters.totalTokens).toBe(2);
+    expect(combined.hours[0]!.counters.totalTokens).toBe(0);
   });
 });

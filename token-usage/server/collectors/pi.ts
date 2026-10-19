@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { TokenUsageAgent } from "../types.js";
 import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
-import { localDayKey } from "../day-window.js";
+import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
 import type { TranscriptFile } from "../transcript-files.js";
 import { listTranscriptFiles, parseJsonLine, readLines } from "../transcript-files.js";
@@ -74,6 +74,7 @@ export class PiCollector implements TokenUsageCollector {
         }
         accumulator.record({
           dayKey: localDayKey(timestampMs),
+          hourKey: timestampMs >= context.todayStartMs ? localHourKey(timestampMs) : undefined,
           sessionId: path.relative(root, file.filePath),
           model: entry.message.model,
           delta: toUsageDelta(entry.message.usage),
