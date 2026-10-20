@@ -32,7 +32,7 @@ interface AgentPaneProps {
   theme: Theme;
   navigation: Navigation;
   onActivate: () => void;
-  /** 折叠该面板到窗口底部的最小化条。 */
+  /** 折叠该面板到窗口顶部的最小化条。 */
   onToggleCollapse: () => void;
   /** 拖动头部结束后回调：给出相对起点的位移，由外层换算新的顺序。 */
   onDrop: (dx: number, dy: number) => void;
@@ -112,9 +112,21 @@ function useStyles(theme: Theme) {
       },
       grow: { flex: 1, minWidth: 0 },
       titleRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
-      dot: { width: 8, height: 8, borderRadius: 4 },
-      title: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const },
+      title: {
+        color: theme.colors.foreground,
+        fontSize: 14,
+        fontWeight: "600" as const,
+        flexShrink: 1,
+      },
       meta: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      statusPill: {
+        flexShrink: 0,
+        borderWidth: 1,
+        borderRadius: 999,
+        paddingHorizontal: 6,
+        paddingVertical: 1,
+      },
+      statusPillText: { fontSize: 10, fontWeight: "600" as const },
       iconButton: {
         borderRadius: 6,
         borderWidth: 1,
@@ -348,9 +360,11 @@ export function AgentPane({
     [enqueue],
   );
 
-  const title = info?.workspaceLabel ?? view.workspaceId;
+  const workspaceTitle = info?.workspaceLabel ?? view.workspaceId;
+  // 主标题用 workspace 名做分组，agent 名放副标题，状态由右侧胶囊展示。
+  const secondaryTitle = agentId == null ? "无 agent" : (info?.agentTitle ?? agentId);
   const effectiveStatus = status ?? info?.agentStatus ?? null;
-  const statusLabel = effectiveStatus ? (STATUS_LABELS[effectiveStatus] ?? effectiveStatus) : "…";
+  const statusLabel = effectiveStatus ? (STATUS_LABELS[effectiveStatus] ?? effectiveStatus) : null;
   const canSend = draft.trim().length > 0 && agentId != null;
 
   // 发送状态提示：发送中 / 排队中。
@@ -382,13 +396,26 @@ export function AgentPane({
         </View>
         <View style={styles.grow}>
           <View style={styles.titleRow}>
-            <View style={[styles.dot, { backgroundColor: statusColor(effectiveStatus, theme) }]} />
             <Text numberOfLines={1} style={styles.title}>
-              {title}
+              {workspaceTitle}
             </Text>
+            {statusLabel ? (
+              <View
+                style={[styles.statusPill, { borderColor: statusColor(effectiveStatus, theme) }]}
+              >
+                <Text
+                  style={[
+                    styles.statusPillText,
+                    { color: statusColor(effectiveStatus, theme) },
+                  ]}
+                >
+                  {statusLabel}
+                </Text>
+              </View>
+            ) : null}
           </View>
           <Text numberOfLines={1} style={styles.meta}>
-            {agentId == null ? "无 agent" : `${info?.agentTitle ?? agentId} · ${statusLabel}`}
+            {secondaryTitle}
           </Text>
         </View>
         {embedSrc ? (

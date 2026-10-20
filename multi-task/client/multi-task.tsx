@@ -1,7 +1,7 @@
 import type { PaseoAgent, PaseoWorkspace } from "@getpaseo/client";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { usePaseo, useSettings } from "@getpaseo/plugin/client";
-import { useToast } from "@getpaseo/plugin/client/react-native";
+import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
 import { buildAgentDeepLinkRoute } from "@getpaseo/protocol/agent-deep-link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -106,8 +106,8 @@ function useStyles(theme: Theme, compact: boolean) {
       },
       panesWrap: { flex: 1 },
       panesScroll: { flex: 1 },
-      row: { flexDirection: "row" as const, justifyContent: "center" as const },
-      hiddenList: { gap: 6, paddingTop: 8 },
+      row: { flexDirection: "row" as const, justifyContent: "flex-start" as const },
+      hiddenList: { gap: 6, paddingBottom: 8 },
       hiddenRow: {
         flexDirection: "row" as const,
         alignItems: "center" as const,
@@ -133,9 +133,7 @@ function useStyles(theme: Theme, compact: boolean) {
 interface TileGrid {
   cols: number;
   rows: number;
-  cellWidth: number;
   cellHeight: number;
-  contentHeight: number;
 }
 
 /**
@@ -167,11 +165,9 @@ function computeTileGrid(
     }
   }
   const rows = Math.ceil(count / cols);
-  const cellWidth = (width - gap * (cols - 1)) / cols;
   const naturalCellHeight = (height - gap * (rows - 1)) / rows;
   const cellHeight = Math.max(naturalCellHeight, minCellHeight);
-  const contentHeight = cellHeight * rows + gap * (rows - 1);
-  return { cols, rows, cellWidth, cellHeight, contentHeight };
+  return { cols, rows, cellHeight };
 }
 
 /** agent 的最近活跃时间，用来在一个 workspace 里挑「当前」的 agent。 */
@@ -179,6 +175,66 @@ function agentActivityTime(agent: PaseoAgent): number {
   const raw = agent.lastUserMessageAt ?? agent.updatedAt;
   const parsed = Date.parse(raw);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+interface RemoveConfirmProps {
+  open: boolean;
+  label: string;
+  theme: Theme;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+/** 移除面板前的确认弹窗：面板一旦移除只能重新添加，不静默删除。 */
+function RemoveConfirm({ open, label, theme, onCancel, onConfirm }: RemoveConfirmProps) {
+  const styles = useMemo(
+    () => ({
+      body: { color: theme.colors.foreground, fontSize: 14, lineHeight: 20 },
+      actions: { flexDirection: "row" as const, justifyContent: "flex-end" as const, gap: 8 },
+      cancel: {
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+      },
+      cancelText: { color: theme.colors.foreground, fontSize: 13 },
+      confirm: {
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        backgroundColor: theme.colors.statusDanger,
+      },
+      confirmText: { color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" as const },
+    }),
+    [theme],
+  );
+
+  return (
+    <Modal title="移除面板" open={open} onOpenChange={(next) => (next ? undefined : onCancel())}>
+      <Modal.Content>
+        <Text style={styles.body}>确定要从多任务窗口移除「{label}」吗？移除后需要重新添加才能看回。</Text>
+        <View style={styles.actions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="取消移除"
+            onPress={onCancel}
+            style={styles.cancel}
+          >
+            <Text style={styles.cancelText}>取消</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="确认移除"
+            onPress={onConfirm}
+            style={styles.confirm}
+          >
+            <Text style={styles.confirmText}>移除</Text>
+          </Pressable>
+        </View>
+      </Modal.Content>
+    </Modal>
+  );
 }
 
 export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScreenProps) {
@@ -189,6 +245,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   const [picking, setPicking] = useState(false);
   // 当前焦点面板（点击 / 键盘聚焦时更新），用于高亮。
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
+  // 待移除的面板：先弹窗确认再真正删掉。
+  const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
 
   // 能否内嵌只看有没有 DOM（浏览器 / Electron 桌面 App 都有），不依赖布局上报的 platform。
   const canEmbed = useMemo(() => {
@@ -205,7 +263,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   const views = settings.status === "ready" ? settings.values.views : [];
   const revision = settings.status === "ready" ? settings.revision : null;
 
-  // 隐藏的面板不占格子：展开的铺满主区域，隐藏的在底部收成整行标题条。
+  // 隐藏的面板不占格子：展开的铺满主区域，隐藏的在顶部收成整行标题条。
   const expandedViews = useMemo(() => views.filter((view) => !view.collapsed), [views]);
   const collapsedViews = useMemo(() => views.filter((view) => view.collapsed), [views]);
 
@@ -236,6 +294,13 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     },
     [agentsByWorkspace],
   );
+
+  const pendingRemovalLabel = useMemo(() => {
+    if (!pendingRemovalId) return "";
+    const view = views.find((item) => item.id === pendingRemovalId);
+    if (!view) return "";
+    return workspaceLabels.get(view.workspaceId) ?? view.workspaceId;
+  }, [pendingRemovalId, views, workspaceLabels]);
 
   const existingWorkspaceIds = useMemo(
     () => new Set(views.map((view) => view.workspaceId)),
@@ -277,13 +342,16 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     [existingWorkspaceIds, views, persist, canEmbed],
   );
 
-  const removeView = useCallback(
-    (viewId: string) => {
-      void persist(views.filter((view) => view.id !== viewId));
-      setActiveViewId((current) => (current === viewId ? null : current));
-    },
-    [views, persist],
-  );
+  const requestRemove = useCallback((viewId: string) => {
+    setPendingRemovalId(viewId);
+  }, []);
+
+  const confirmRemove = useCallback(() => {
+    if (!pendingRemovalId) return;
+    void persist(views.filter((view) => view.id !== pendingRemovalId));
+    setActiveViewId((current) => (current === pendingRemovalId ? null : current));
+    setPendingRemovalId(null);
+  }, [pendingRemovalId, views, persist]);
 
   const setViewMode = useCallback(
     (viewId: string, mode: MultiTaskViewMode) => {
@@ -333,14 +401,17 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     [expandedViews.length, paneArea.width, paneArea.height, layout.compact, gap],
   );
 
+  // 每行铺满可用宽度：整行放得下时均分，最后一行放不满的面板平分整行宽度。
   const tileRows = useMemo(() => {
     if (!grid) return [];
-    const rows: (typeof views)[] = [];
+    const rows: { views: MultiTaskView[]; width: number }[] = [];
     for (let index = 0; index < expandedViews.length; index += grid.cols) {
-      rows.push(expandedViews.slice(index, index + grid.cols));
+      const rowViews = expandedViews.slice(index, index + grid.cols);
+      const rowWidth = (paneArea.width - gap * (rowViews.length - 1)) / rowViews.length;
+      rows.push({ views: rowViews, width: rowWidth });
     }
     return rows;
-  }, [grid, expandedViews]);
+  }, [grid, expandedViews, paneArea.width, gap]);
 
   const setViewCollapsed = useCallback(
     (viewId: string, collapsed: boolean) => {
@@ -362,7 +433,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       const clamp = (value: number, low: number, high: number) =>
         Math.min(high, Math.max(low, value));
       const nextCol = clamp(
-        (originExpanded % cols) + Math.round(dx / Math.max(1, grid.cellWidth)),
+        (originExpanded % cols) +
+          Math.round(dx / Math.max(1, tileRows[Math.floor(originExpanded / cols)]?.width ?? 1)),
         0,
         cols - 1,
       );
@@ -384,7 +456,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       next.splice(target, 0, moved);
       void persist(next);
     },
-    [grid, expandedViews, views, persist],
+    [grid, expandedViews, views, persist, tileRows],
   );
 
   const retry = useCallback(() => setNonce((value) => value + 1), []);
@@ -444,47 +516,6 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
         </View>
       ) : (
         <View style={styles.panesOuter}>
-          <View
-            style={styles.panesWrap}
-            onLayout={(event) =>
-              setPaneArea({
-                width: event.nativeEvent.layout.width,
-                height: event.nativeEvent.layout.height,
-              })
-            }
-          >
-            {grid ? (
-              <ScrollView style={styles.panesScroll} contentContainerStyle={{ gap }}>
-                {tileRows.map((row, rowIndex) => (
-                  <View key={rowIndex} style={[styles.row, { gap }]}>
-                    {row.map((view) => (
-                      <AgentPane
-                        key={view.id}
-                        view={view}
-                        info={resolveInfo(view)}
-                        agentId={agentIdFor(view)}
-                        width={grid.cellWidth}
-                        height={grid.cellHeight}
-                        embedSrc={embedSrcFor(view)}
-                        active={view.id === activeViewId}
-                        theme={theme}
-                        navigation={navigation}
-                        onActivate={() => setActiveViewId(view.id)}
-                        onToggleCollapse={() => setViewCollapsed(view.id, !view.collapsed)}
-                        onDrop={(dx, dy) => handleDrop(view.id, dx, dy)}
-                        onRemove={removeView}
-                        onSetMode={(mode) => setViewMode(view.id, mode)}
-                      />
-                    ))}
-                  </View>
-                ))}
-              </ScrollView>
-            ) : (
-              <View style={styles.centered}>
-                <Text style={styles.muted}>全部面板已隐藏。</Text>
-              </View>
-            )}
-          </View>
           {collapsedViews.length > 0 ? (
             <View style={styles.hiddenList}>
               {collapsedViews.map((view) => {
@@ -524,8 +555,57 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
               })}
             </View>
           ) : null}
+          <View
+            style={styles.panesWrap}
+            onLayout={(event) =>
+              setPaneArea({
+                width: event.nativeEvent.layout.width,
+                height: event.nativeEvent.layout.height,
+              })
+            }
+          >
+            {grid ? (
+              <ScrollView style={styles.panesScroll} contentContainerStyle={{ gap }}>
+                {tileRows.map((row, rowIndex) => (
+                  <View key={rowIndex} style={[styles.row, { gap }]}>
+                    {row.views.map((view) => (
+                      <AgentPane
+                        key={view.id}
+                        view={view}
+                        info={resolveInfo(view)}
+                        agentId={agentIdFor(view)}
+                        width={row.width}
+                        height={grid.cellHeight}
+                        embedSrc={embedSrcFor(view)}
+                        active={view.id === activeViewId}
+                        theme={theme}
+                        navigation={navigation}
+                        onActivate={() => setActiveViewId(view.id)}
+                        onToggleCollapse={() => setViewCollapsed(view.id, !view.collapsed)}
+                        onDrop={(dx, dy) => handleDrop(view.id, dx, dy)}
+                        onRemove={requestRemove}
+                        onSetMode={(mode) => setViewMode(view.id, mode)}
+                      />
+                    ))}
+                  </View>
+                ))}
+              </ScrollView>
+            ) : (
+              <View style={styles.centered}>
+                <Text style={styles.muted}>全部面板已隐藏。</Text>
+              </View>
+            )}
+          </View>
         </View>
       )}
+
+      <RemoveConfirm
+        open={pendingRemovalId != null}
+        label={pendingRemovalLabel}
+        theme={theme}
+        onCancel={() => setPendingRemovalId(null)}
+        onConfirm={confirmRemove}
+      />
 
       <WorkspacePicker
         open={picking}
