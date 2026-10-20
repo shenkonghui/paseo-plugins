@@ -17,15 +17,21 @@ export const multiTaskViewSchema = z.object({
 export type MultiTaskView = z.output<typeof multiTaskViewSchema>;
 export type MultiTaskViewMode = MultiTaskView["mode"];
 
+export const multiTaskToolbarSizeSchema = z.enum(["compact", "comfortable"]).default("compact");
+export type MultiTaskToolbarSize = z.output<typeof multiTaskToolbarSizeSchema>;
+
 /** 面板列表持久化在宿主侧，所有客户端共享，刷新 / 重启不丢。 */
 export const multiTaskSettings = defineSettings({
   id: "views",
   scope: "host",
-  version: 2,
+  version: 3,
   schema: z.object({
     views: z.array(multiTaskViewSchema).default([]),
+    /** 工具栏尺寸：compact 更矮（默认），comfortable 保留较大的间距。 */
+    toolbarSize: multiTaskToolbarSizeSchema,
   }),
   // v1 是按 agent 存的（{id, agentId, workspaceId, mode}），v2 改为按 workspace；按 workspaceId 去重。
+  // v2→v3 只新增 toolbarSize，校验时由 schema 默认值补齐。
   migrate(values, fromVersion) {
     if (fromVersion >= 2) return values;
     const raw = values as { views?: unknown } | null;

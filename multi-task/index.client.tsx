@@ -1,9 +1,11 @@
 import type { PluginClientContext, PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { MultiTaskScreen } from "./client/multi-task";
+import { MultiTaskSettings } from "./client/multi-task-settings";
 import { registerGlobalShortcut } from "./client/shortcut";
 
 const SCREEN_ID = "multi-task";
+const SETTINGS_ID = "display";
 
 function MultiTaskSidebarItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
   return (
@@ -24,6 +26,12 @@ export default function contribute(client: PluginClientContext) {
     title: "多任务",
     Component: MultiTaskSidebarItem,
   });
+  client.addSettingsScreen({
+    id: SETTINGS_ID,
+    title: "多任务",
+    icon: "LayoutGrid",
+    Component: MultiTaskSettings,
+  });
 
   client.addCommandCenterItem({
     id: "open-multi-task",
@@ -33,6 +41,16 @@ export default function contribute(client: PluginClientContext) {
     context: "global",
     onSelect({ openScreen }) {
       openScreen({ screenId: SCREEN_ID });
+    },
+  });
+  client.addCommandCenterItem({
+    id: "open-multi-task-settings",
+    title: "多任务设置",
+    icon: "Settings",
+    keywords: ["multi-task", "多任务", "设置", "toolbar", "工具栏"],
+    context: "global",
+    onSelect({ openSettings }) {
+      openSettings(SETTINGS_ID);
     },
   });
 

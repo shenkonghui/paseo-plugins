@@ -25,7 +25,7 @@ interface AgentPaneProps {
   /** 由外层按任务数量平铺计算出的尺寸，保证内层消息列表可滚动。 */
   width: number;
   height: number;
-  /** 内嵌原生会话的 URL；为 null 时（无 DOM / 无 agent）只能自绘。 */
+  /** 内嵌视图的 URL；无 DOM 时为 null。workspace 没有 agent 时指向该 workspace 的「新建 agent」页。 */
   embedSrc: string | null;
   /** 是否为当前焦点面板（高亮显示）。 */
   active: boolean;
@@ -459,17 +459,21 @@ export function AgentPane({
         </Pressable>
       </View>
 
-      {agentId == null ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyText}>该 workspace 暂无 agent。</Text>
-        </View>
-      ) : embedded && embedSrc ? (
+      {embedded && embedSrc ? (
         <EmbeddedAgent
           src={embedSrc}
           theme={theme}
           onActivate={onActivate}
           onFallback={() => onSetMode("stream")}
         />
+      ) : agentId == null ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>
+            {embedSrc
+              ? "该 workspace 暂无 agent。切到「内嵌」可在该 workspace 新建 agent。"
+              : "该 workspace 暂无 agent。"}
+          </Text>
+        </View>
       ) : error ? (
         <View style={styles.empty}>
           <Text style={styles.errorText}>{error}</Text>

@@ -8,6 +8,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   makeViewId,
   multiTaskSettings,
+  type MultiTaskToolbarSize,
   type MultiTaskView,
   type MultiTaskViewMode,
 } from "../shared/settings";
@@ -52,9 +53,10 @@ function useDashboardData(paseo: Paseo, nonce: number) {
   return { data, error };
 }
 
-function useStyles(theme: Theme, compact: boolean) {
-  return useMemo(
-    () => ({
+function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbarSize) {
+  return useMemo(() => {
+    const comfortable = toolbarSize === "comfortable";
+    return {
       screen: { flex: 1, backgroundColor: theme.colors.surface0 },
       centered: {
         flex: 1,
@@ -68,35 +70,46 @@ function useStyles(theme: Theme, compact: boolean) {
       toolbar: {
         flexDirection: "row" as const,
         alignItems: "center" as const,
-        gap: 8,
+        gap: comfortable ? 8 : 6,
         paddingHorizontal: compact ? 12 : 20,
-        paddingTop: compact ? 12 : 20,
-        paddingBottom: 10,
+        paddingTop: comfortable ? (compact ? 12 : 20) : 8,
+        paddingBottom: comfortable ? 10 : 6,
       },
       toolbarTitle: {
         color: theme.colors.foreground,
-        fontSize: 14,
+        fontSize: comfortable ? 14 : 13,
         fontWeight: "600" as const,
       },
-      toolbarMeta: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      toolbarMeta: { color: theme.colors.foregroundMuted, fontSize: comfortable ? 12 : 11 },
       spacer: { flex: 1 },
       ghostButton: {
         borderRadius: 8,
         borderWidth: 1,
         borderColor: theme.colors.border,
         paddingHorizontal: 10,
-        paddingVertical: 6,
+        paddingVertical: comfortable ? 6 : 4,
       },
-      ghostButtonText: { color: theme.colors.foreground, fontSize: 13 },
+      ghostButtonText: { color: theme.colors.foreground, fontSize: comfortable ? 13 : 12 },
+      toolbarToggle: {
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        paddingHorizontal: 7,
+        paddingVertical: comfortable ? 4 : 2,
+      },
+      toolbarToggleText: {
+        color: theme.colors.foregroundMuted,
+        fontSize: comfortable ? 13 : 12,
+      },
       primaryButton: {
         borderRadius: 8,
         paddingHorizontal: 12,
-        paddingVertical: 7,
+        paddingVertical: comfortable ? 7 : 4,
         backgroundColor: theme.colors.accent,
       },
       primaryButtonText: {
         color: theme.colors.accentForeground,
-        fontSize: 13,
+        fontSize: comfortable ? 13 : 12,
         fontWeight: "600" as const,
       },
       panesOuter: {
@@ -125,9 +138,8 @@ function useStyles(theme: Theme, compact: boolean) {
       hiddenMeta: { color: theme.colors.foregroundMuted, fontSize: 12, flexShrink: 1 },
       hiddenSpacer: { flex: 1 },
       hiddenExpand: { color: theme.colors.accent, fontSize: 12 },
-    }),
-    [theme, compact],
-  );
+    };
+  }, [theme, compact, toolbarSize]);
 }
 
 interface TileGrid {
@@ -247,6 +259,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
   // 待移除的面板：先弹窗确认再真正删掉。
   const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
+  // 工具栏收起后只留一个小图标，点它再展开（纯界面状态，不持久化）。
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
 
   // 能否内嵌只看有没有 DOM（浏览器 / Electron 桌面 App 都有），不依赖布局上报的 platform。
   const canEmbed = useMemo(() => {
@@ -258,10 +272,10 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     height: 0,
   });
   const { data, error } = useDashboardData(paseo, nonce);
-  const styles = useStyles(theme, layout.compact);
+  const toolbarSize = settings.status === "ready" ? settings.values.toolbarSize : "compact";
+  const styles = useStyles(theme, layout.compact, toolbarSize);
 
   const views = settings.status === "ready" ? settings.values.views : [];
-  const revision = settings.status === "ready" ? settings.revision : null;
 
   // 隐藏的面板不占格子：展开的铺满主区域，隐藏的在顶部收成整行标题条。
   const expandedViews = useMemo(() => views.filter((view) => !view.collapsed), [views]);
@@ -309,15 +323,15 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
 
   const persist = useCallback(
     async (next: typeof views) => {
-      if (!revision) return;
+      if (settings.status !== "ready") return;
       try {
-        const ok = await settings.save({ views: next }, revision);
+        const ok = await settings.save({ ...settings.values, views: next }, settings.revision);
         if (!ok) toast.show("保存失败，请重试", { variant: "error" });
       } catch (cause) {
         toast.show(cause instanceof Error ? cause.message : String(cause), { variant: "error" });
       }
     },
-    [settings, revision, toast],
+    [settings, toast],
   );
 
   const addView = useCallback(
@@ -366,10 +380,13 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   );
 
   // 用相对路由：iframe 会基于当前文档解析，避免自定义 scheme / 拿不到 origin 的问题。
+  // 没有 agent 时打开该 workspace 的「新建 agent」草稿页（app 会把 draft:new 换成新草稿）。
   const embedSrcFor = useCallback(
     (view: MultiTaskView): string | null => {
+      if (!canEmbed) return null;
       const agentId = agentIdFor(view);
-      return canEmbed && agentId ? buildAgentDeepLinkRoute({ serverId: host.id, agentId }) : null;
+      if (agentId) return buildAgentDeepLinkRoute({ serverId: host.id, agentId });
+      return `/h/${encodeURIComponent(host.id)}/workspace/${encodeURIComponent(view.workspaceId)}?open=${encodeURIComponent("draft:new")}`;
     },
     [canEmbed, host.id, agentIdFor],
   );
@@ -479,27 +496,48 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
 
   return (
     <View style={styles.screen}>
-      <View style={styles.toolbar}>
-        <Text style={styles.toolbarTitle}>多任务</Text>
-        <Text style={styles.toolbarMeta}>{views.length > 0 ? `${views.length} 个 workspace` : ""}</Text>
-        <View style={styles.spacer} />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="刷新 workspace 信息"
-          onPress={retry}
-          style={styles.ghostButton}
-        >
-          <Text style={styles.ghostButtonText}>刷新</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="添加 workspace"
-          onPress={openPicker}
-          style={styles.primaryButton}
-        >
-          <Text style={styles.primaryButtonText}>+ 添加 workspace</Text>
-        </Pressable>
-      </View>
+      {toolbarCollapsed ? (
+        <View style={styles.toolbar}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="展开工具栏"
+            onPress={() => setToolbarCollapsed(false)}
+            style={styles.toolbarToggle}
+          >
+            <Text style={styles.toolbarToggleText}>▾</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.toolbar}>
+          <Text style={styles.toolbarTitle}>多任务</Text>
+          <Text style={styles.toolbarMeta}>{views.length > 0 ? `${views.length} 个 workspace` : ""}</Text>
+          <View style={styles.spacer} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="刷新 workspace 信息"
+            onPress={retry}
+            style={styles.ghostButton}
+          >
+            <Text style={styles.ghostButtonText}>刷新</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="添加 workspace"
+            onPress={openPicker}
+            style={styles.primaryButton}
+          >
+            <Text style={styles.primaryButtonText}>+ 添加 workspace</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="收起工具栏"
+            onPress={() => setToolbarCollapsed(true)}
+            style={styles.toolbarToggle}
+          >
+            <Text style={styles.toolbarToggleText}>▴</Text>
+          </Pressable>
+        </View>
+      )}
 
       {error ? (
         <View style={styles.centered}>
@@ -511,7 +549,9 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       ) : views.length === 0 ? (
         <View style={styles.centered}>
           <Text style={styles.muted}>
-            {"还没有 workspace。点击右上角「+ 添加 workspace」，挑选 workspace 即可并排查看它们当前会话。"}
+            {toolbarCollapsed
+              ? "还没有 workspace。点击左上角图标展开工具栏，再添加 workspace。"
+              : "还没有 workspace。点击右上角「+ 添加 workspace」，挑选 workspace 即可并排查看它们当前会话。"}
           </Text>
         </View>
       ) : (

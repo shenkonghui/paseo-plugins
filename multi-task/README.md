@@ -14,7 +14,7 @@
   - **排序**：运行中的排最前 → 其余按最近更新时间倒序（`lastUserMessageAt → updatedAt`）→ 再按名字。
   - **运行中标记**：有 agent 在跑时，该行用 **accent 描边 + accent 状态点**，副标题显示「运行中 · N 个 agent」；其余为普通描边 + 灰点。
 - 点选一个 workspace 即加入窗口；已在窗口中的显示「已添加」。
-- 每个面板头部有「移除」，从窗口移除该 workspace（不影响原生会话）。
+- 每个面板头部有「移除」，从窗口移除该 workspace（不影响原生会话）；会先弹窗确认，取消则保持原样。
 
 面板内容取该 workspace **当前活跃的 agent**（未归档里 `lastUserMessageAt → updatedAt` 最新的那个），所以 workspace 里换了活跃会话，面板会跟着变。
 
@@ -58,6 +58,8 @@
 - **内嵌**：用 `<iframe>` 加载 `/h/<serverId>/agent/<agentId>`（`buildAgentDeepLinkRoute`，agentId = 该 workspace 当前活跃 agent），即**真正的原生会话**，自带的输入框/权限弹窗/文件 diff 全都在。
 - **流**：上面 4 节的自绘对话流（原生平台与加载失败时的回退）。
 
+**workspace 里没有 agent 时**：内嵌模式会打开该 workspace 的「新建 agent」页（`/h/<serverId>/workspace/<workspaceId>?open=draft:new`，app 会把它换成一张新草稿标签），可以直接在里面创建 agent；创建后刷新（或下次重进）即切到该 agent 的会话。原生平台没有 DOM，仍显示「该 workspace 暂无 agent。」。
+
 **侧栏处理**：内嵌的是完整 app 实例，自带左侧 workspace 栏与右侧 Explorer。插件**只藏左侧栏、保留右侧 Explorer**——app 没有提供隐藏它们的 URL 参数，所以在同源 iframe 里注入一段 CSS：`:has(> [data-testid="left-sidebar-resize-handle"]){display:none!important}`。
 这段注入是**尽力而为**的：依赖 app 的 DOM 结构与 `:has()`（Chromium 105+ / Electron 满足），app 改版可能失效；跨源时拿不到 `contentDocument`，不会注入。想连右侧也藏起来，在 `client/embedded-agent.tsx` 的 `HIDE_LEFT_SIDEBAR_CSS` 里补一条 `[data-testid="workspace-explorer-sidebar"]{display:none!important}` 即可。
 
@@ -77,10 +79,21 @@
 - iframe 用**相对路由** `/h/<serverId>/agent/<agentId>`（`buildAgentDeepLinkRoute`），基于当前文档解析，天然同源，共享鉴权与本地存储，无需硬编码 host / origin。
 - 默认值：有 DOM 时新增面板默认「内嵌」，否则「流」。想改默认，编辑 `client/multi-task.tsx` 里 `addView` 的 `mode`。
 
-## 6. 持久化
+## 6. 工具栏尺寸 / 收起
+
+顶部「多任务 / 刷新 / + 添加 workspace」工具栏支持两种尺寸（宿主侧设置，所有客户端共享）：
+
+- **紧凑（默认）**：更小的上下留白、间距与字号，工具栏高度约 41px；
+- **舒适**：保留较大的间距与字号（旧版样式）。
+
+工具栏最右侧的「▴」把整行收起，只留左上角一个小图标「▾」，点它即可展开。收起是纯界面状态（不持久化，重开窗口默认展开）。
+
+入口：命令中心（⌘K）搜「多任务设置」，或 设置 → 插件 → 多任务。对应 `shared/settings.ts` 的 `toolbarSize` 字段（`compact` / `comfortable`）。
+
+## 7. 持久化
 
 面板列表存放在**宿主侧 settings**（`defineSettings`，scope `host`），所有客户端共享、刷新或重启 daemon 不丢。
-存 `{ workspaceId, mode }`；workspace 名、当前 agent、状态每次从实时列表解析。settings 版本从 1 迁到 2（v1 按 agent 存，迁移时按 `workspaceId` 去重）。
+存 `{ views, toolbarSize }`；workspace 名、当前 agent、状态每次从实时列表解析。settings 版本从 1 迁到 2（v1 按 agent 存，迁移时按 `workspaceId` 去重），v3 新增 `toolbarSize`（旧数据自动补 `compact`）。
 
 ## 已知限制
 
