@@ -10,6 +10,7 @@ Token 监控面板:读取本机各 agent CLI 自己的本地数据,汇总展示 
 - 柱状图:默认按天展示 total tokens,点击单根柱子查看当日明细;**窗口为「今天」时改为按小时**(0 点 → 当前小时),按本机时区切桶
 - 按 agent 分卡片:每个 agent 的总量、请求、会话、输入/输出/缓存读/缓存写/思考 tokens、成本、积分(仅展示该 agent 上报的维度)
 - **每个 agent 卡片右侧有采集开关**(默认开启):关闭后服务端直接跳过该 agent 的采集(不读它的数据源),卡片变灰并标「已暂停采集」;开关存在宿主侧设置里,跨客户端共享、重启不丢
+- **失败事件提示**:agent 卡片上直接列出本机当天 0 点以来的限流 / 额度 / 鉴权等失败(归类 + 状态码 + 次数 + 重置时间 + 原文),总量卡片再给一行汇总;没有失败的 agent 不展示这一块
 - **本地磁盘占用（弹窗）**:面板底部只有一行「本地磁盘占用」入口,默认不采集也不展示占用;**点开弹窗才统计**,弹窗里按 agent 展示数据目录的递归总占用、会话数与会话数据占用
 - **手动清理（弹窗内确认）**:在占用弹窗里按 agent 或一键删除 30 天前(且之后没有新活动)的会话,确认步骤写明将删除的会话数与预计释放空间,清理后立即用实际释放量刷新
 
@@ -22,6 +23,32 @@ Token 监控面板:读取本机各 agent CLI 自己的本地数据,汇总展示 
 | OpenCode | XDG data 下 opencode 的 SQLite | `node:sqlite` 只读 keyset 分页 |
 | Devin | XDG data 下 `devin/cli/sessions.db` | `node:sqlite` 只读物化 CTE 聚合(2GB 级库,一次扫描) |
 | Qoder | `~/.qoder-cn/projects/**/*.jsonl`(国内版) + `~/.qoder/projects/**/*.jsonl`(国际版) | JSONL 行扫描(`message.usage`,含 `<uuid>/subagents/*.jsonl`,按 `request_id` 去重) |
+
+### 失败事件(限流 / 额度 / 鉴权 等)
+
+Paseo 只会把这类请求当成「没有返回」,而 agent CLI 的本地数据里其实写着结构化原因,所以面板把它们归一化成固定字段展示。窗口是**本机当天 0 点以来**,跨零点重新计算;切到「近 7 天 / 近 30 天」也不会回溯更早的失败——历史失败不代表当前是否被卡住,混进来只会让卡片越看越长。
+
+| agent | 原始字段 | 能否采集 |
+| --- | --- | --- |
+| CodeBuddy | `providerData.error`(`code` / `status` / `message` / `isRetryable` / `isNetworkError` / `isStreamTimeout`) | 是 |
+| OpenCode | `session_message.data.error`(`type` / `message` / `status` / `response.body`) | 是 |
+| Pi / Qoder / Devin | 没有结构化错误字段 | 否(issues 恒为空) |
+
+每条聚合记录固定为这些字段(拿不到的维度是 `null`,不虚构):
+
+| 字段 | 含义 |
+| --- | --- |
+| `kind` | `rate_limit` / `quota` / `auth` / `network` / `timeout` / `upstream` / `aborted` / `unknown` |
+| `code` / `httpStatus` | provider 错误码(如 CodeBuddy `6004`)与 HTTP 状态码(如 `429`) |
+| `retryable` | provider 是否标记为可重试 |
+| `message` | **原文**,不翻译;聚合时保留最近一次的 |
+| `model` / `sessionId` | 最近一次发生时的模型与会话(相对数据根的路径) |
+| `firstAt` / `lastAt` / `count` | 首次、最近一次时间与发生次数 |
+| `resetAt` | 从文案里解析出的额度重置时间;解析不出为 `null` |
+
+聚合键是 `kind + code + httpStatus + resetAt`(不含 `message`——原文里带 requestID / 会话 id,按它聚合会一条都合不起来)。比如 CodeBuddy 的 `429 …将在 2026-10-20 09:09:22 UTC+8 重置…` 会被识别成 `kind=quota`、`httpStatus=429`、`code=6004`,并把重置时间解析成 ISO 时刻;`Interrupted by user` 归 `aborted`,不计入失败。
+
+> `resetAt` 只认带时区的写法(`UTC+8` 或 ISO 偏移),认不出就留 `null`,不按主机时区猜。
 
 > **Qoder 的 token 需要显式开启上报**:Qoder CLI 默认把 token 清零,只写 Credits。要让面板拿到真实 token,需给 CLI 进程加上环境变量——国内版 `QODERCN_EXPOSE_TOKEN_USAGE=1`,国际版 `QODER_EXPOSE_TOKEN_USAGE=1`(前缀不可互换),例如写进 `~/.paseo/config.json` 的 `agents.providers["qoder-cn"].env`。未开启时该 agent 仍会显示请求数、会话数和积分,但 token 维度为 0。
 > Qoder 的 Credits(积分)按**账单口径**统计:只累计 `billable !== false` 的请求,免费模型的请求(token 与请求数照计)不计入积分。

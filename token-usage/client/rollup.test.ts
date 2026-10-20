@@ -32,6 +32,7 @@ function agent(
     days,
     hours: [],
     models: [],
+    issues: [],
   };
 }
 

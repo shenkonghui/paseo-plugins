@@ -6,6 +6,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { TokenUsageAgent } from "../types.js";
 import { createYieldGate } from "../yield-gate.js";
 import { windowCutoffMs } from "../day-window.js";
+import { issueCutoffMs } from "../issues.js";
 import { CodebuddyCollector } from "./codebuddy.js";
 import { DevinCollector } from "./devin.js";
 import { collectDevinRows as collectDevin } from "./devin-worker.js";
@@ -30,6 +31,7 @@ function makeContext(nowMs: number) {
     homeDir: tempRoot,
     nowMs,
     cutoffMs: windowCutoffMs(nowMs, 30),
+    issueCutoffMs: issueCutoffMs(nowMs),
     todayStartMs: windowCutoffMs(nowMs, 1),
     windowDays: 30,
     logger: console,
@@ -110,6 +112,35 @@ describe("OpencodeCollector", () => {
       day1,
       JSON.stringify({ tokens: { input: 999, output: 999 } }),
     );
+    // 失败请求：token 维度为空，但要在 issues 里露出来。
+    insert.run(
+      "s1",
+      "err1",
+      day1 + 800,
+      JSON.stringify({
+        model: { id: "test-model" },
+        error: { type: "provider.quota", message: "Go usage limit exceeded", status: 429 },
+      }),
+    );
+    insert.run(
+      "s1",
+      "err2",
+      day1 + 900,
+      JSON.stringify({
+        model: { id: "test-model" },
+        error: { type: "aborted", message: "Step interrupted" },
+      }),
+    );
+    // 昨天的失败：跨天后不再展示（即使仍在 24 小时内）。
+    insert.run(
+      "s2",
+      "err0",
+      day2 + 800,
+      JSON.stringify({
+        model: { id: "test-model" },
+        error: { type: "provider.quota", message: "yesterday quota", status: 429 },
+      }),
+    );
     db.close();
 
     const agent = await new OpencodeCollector().collect(makeContext(nowMs));
@@ -121,6 +152,19 @@ describe("OpencodeCollector", () => {
     expect(agent.totals.cacheReadTokens).toBe(250 * 5);
     expect(agent.totals.costUsd).toBeCloseTo(300 * 0.001 + 250 * 0.002, 6);
     expect(agent.days.map((day) => day.date)).toHaveLength(2);
+    // 失败行不影响 token 汇总，只进 issues；最近的排前面。
+    expect(agent.issues.map((issue) => issue.kind)).toEqual(["aborted", "quota"]);
+    expect(agent.issues[1]).toMatchObject({
+      kind: "quota",
+      httpStatus: 429,
+      code: null,
+      retryable: null,
+      count: 1,
+      sessionId: "s1",
+      model: "test-model",
+      resetAt: null,
+    });
+    expect(agent.issues[1].message).toBe("Go usage limit exceeded");
   });
 
   it("reports unavailable when the database is missing", async () => {
@@ -248,6 +292,94 @@ describe("CodebuddyCollector", () => {
     expect(agent.hours).toEqual([
       expect.objectContaining({ hour: 1, totalTokens: 17, requests: 2, sessions: 1 }),
     ]);
+    expect(agent.issues).toEqual([]);
+  });
+
+  it("turns providerData.error entries into aggregated issues", async () => {
+    // 独立 home，避免同目录其它用例的 transcript 混进 token 汇总。
+    const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-codebuddy-"));
+    const projectsDir = path.join(isolated, ".codebuddy", "projects", "issues");
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const nowMs = Date.now();
+    const ts = localMidnight(nowMs) + 3_600_000;
+    const rateLimited = (occurredAt: number) =>
+      JSON.stringify({
+        timestamp: occurredAt,
+        providerData: {
+          model: "deepseek-v4.1-flash",
+          skipRun: true,
+          error: {
+            code: 6004,
+            message:
+              "429 您的使用量已超出频率限制，将在 2026-10-20 09:09:22 UTC+8 重置，您也可以切换其他模型继续使用。 (req-1/session-a)",
+            requestID: "req-1",
+            status: 429,
+            isNetworkError: false,
+            isStreamTimeout: false,
+            isRetryable: false,
+          },
+        },
+      });
+    fs.writeFileSync(
+      path.join(projectsDir, "t2.jsonl"),
+      [
+        rateLimited(ts),
+        rateLimited(ts + 1_000),
+        // 用户主动中断与限流不是一类。
+        JSON.stringify({
+          timestamp: ts,
+          providerData: {
+            error: {
+              message: "Interrupted by user",
+              isNetworkError: false,
+              isStreamTimeout: false,
+              isRetryable: false,
+            },
+          },
+        }),
+        // 昨晚（仍在 24 小时内但已跨天）：不算今天的失败。
+        JSON.stringify({
+          timestamp: localMidnight(nowMs) - 3_600_000,
+          providerData: {
+            error: {
+              code: 6004,
+              message: "429 昨天的频率限制，将在 2026-10-19 23:30:00 UTC+8 重置",
+              status: 429,
+              isRetryable: false,
+            },
+          },
+        }),
+        // 更早：同样不采集。
+        rateLimited(nowMs - 25 * 60 * 60 * 1000),
+      ].join("\n"),
+    );
+
+    const agent = await new CodebuddyCollector().collect({
+      ...makeContext(nowMs),
+      homeDir: isolated,
+    });
+
+    try {
+      expect(agent.totals.totalTokens).toBe(0);
+      expect(agent.issues).toHaveLength(2);
+      const quota = agent.issues.find((issue) => issue.kind === "quota");
+      expect(quota).toMatchObject({
+        code: 6004,
+        httpStatus: 429,
+        retryable: false,
+        count: 2,
+        model: "deepseek-v4.1-flash",
+        sessionId: path.join("issues", "t2.jsonl"),
+      });
+      expect(quota?.resetAt).toBe(new Date("2026-10-20T09:09:22+08:00").toISOString());
+      expect(quota?.lastAt).toBe(new Date(ts + 1_000).toISOString());
+      expect(quota?.firstAt).toBe(new Date(ts).toISOString());
+      // 限定符 + requestID 留在原文里，便于回查。
+      expect(quota?.message).toContain("req-1/session-a");
+      expect(agent.issues.some((issue) => issue.kind === "aborted")).toBe(true);
+    } finally {
+      fs.rmSync(isolated, { recursive: true, force: true });
+    }
   });
 });
 

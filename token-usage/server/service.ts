@@ -10,6 +10,7 @@ import { OpencodeCollector } from "./collectors/opencode.js";
 import { PiCollector } from "./collectors/pi.js";
 import { QoderCollector } from "./collectors/qoder.js";
 import { windowCutoffMs } from "./day-window.js";
+import { issueCutoffMs } from "./issues.js";
 import { unavailableAgent } from "./counters.js";
 import { createYieldGate } from "./yield-gate.js";
 import {
@@ -294,6 +295,7 @@ export class TokenUsageService {
       homeDir: this.homeDir,
       nowMs,
       cutoffMs: windowCutoffMs(nowMs, days),
+      issueCutoffMs: issueCutoffMs(nowMs),
       todayStartMs: windowCutoffMs(nowMs, 1),
       windowDays: days,
       logger: this.logger,
@@ -353,9 +355,20 @@ export class TokenUsageService {
         const result: TokenUsageListResult = { ...parsed.result };
         const days =
           typeof result.rangeDays === "number" ? result.rangeDays : parsed.windowDays;
-        // 旧快照没有 hours 字段（小时视图上线前），忽略它，让首次请求重新采集。
+        // 旧快照缺 hours（小时视图上线前）或 issues（失败事件上线前）时忽略它，
+        // 让首次请求重新采集。
         const hasHours = result.agents.every((agent) => Array.isArray(agent.hours));
-        if (typeof days === "number" && hasHours) {
+        const hasIssues = result.agents.every((agent) => Array.isArray(agent.issues));
+        // 失败事件口径变为「只看当天」后，旧快照里可能还留着昨天的失败；
+        // 跨天或口径变更时直接丢掉快照重采，避免刚打开还显示昨晚的限流。
+        const todayStart = windowCutoffMs(this.now(), 1);
+        const issuesWithinToday = result.agents.every((agent) =>
+          (agent.issues ?? []).every((issue) => {
+            const lastAt = Date.parse(issue.lastAt);
+            return !Number.isFinite(lastAt) || lastAt >= todayStart;
+          }),
+        );
+        if (typeof days === "number" && hasHours && hasIssues && issuesWithinToday) {
           const disabled = new Set(Array.isArray(parsed.disabled) ? parsed.disabled : []);
           this.caches.set(cacheKeyFor(days, disabled), {
             fetchedAtMs: parsed.fetchedAtMs,

@@ -4,6 +4,8 @@ import type {
   TokenUsageCounters,
   TokenUsageDay,
   TokenUsageHour,
+  TokenUsageIssue,
+  TokenUsageIssueKind,
   TokenUsageModel,
 } from "./types.js";
 
@@ -45,6 +47,19 @@ export interface UsageRecord {
   delta: UsageDelta;
   sessionId?: string;
   model?: string;
+}
+
+/** 一次失败请求；`timestampMs` 决定它落在哪一天、以及聚合时的先后。 */
+export interface UsageIssueRecord {
+  kind: TokenUsageIssueKind;
+  message: string;
+  timestampMs: number;
+  code?: number;
+  httpStatus?: number;
+  retryable?: boolean;
+  resetAtMs?: number;
+  model?: string;
+  sessionId?: string;
 }
 
 export function emptyCounters(): UsageCounters {
@@ -103,12 +118,31 @@ interface ModelBucket {
   counters: UsageCounters;
 }
 
+/**
+ * 同一类失败的聚合桶。key 只由「kind + code + httpStatus + 重置时间」构成，
+ * 不含 message（message 里带 requestID / 会话 id，按它聚合会一条都合不起来）。
+ */
+interface IssueBucket {
+  kind: TokenUsageIssueKind;
+  code: number | null;
+  httpStatus: number | null;
+  retryable: boolean | null;
+  resetAtMs: number | null;
+  message: string;
+  model: string | null;
+  sessionId: string | null;
+  firstAtMs: number;
+  lastAtMs: number;
+  count: number;
+}
+
 /** Rolls per-call records into per-day, per-model, and overall buckets. */
 export class UsageAccumulator {
   private readonly days = new Map<string, DayBucket>();
   private readonly hours = new Map<string, DayBucket>();
   private readonly models = new Map<string, ModelBucket>();
   private readonly sessions = new Set<string>();
+  private readonly issues = new Map<string, IssueBucket>();
   private readonly totals: UsageCounters = emptyCounters();
 
   record(input: UsageRecord): void {
@@ -141,6 +175,43 @@ export class UsageAccumulator {
       };
       addUsageTo(bucket.counters, input.delta);
       this.models.set(input.model, bucket);
+    }
+  }
+
+  /** 记一次失败请求；同 kind / code / 状态 / 重置时间的记录合并计数。 */
+  recordIssue(input: UsageIssueRecord): void {
+    const key = [
+      input.kind,
+      input.code ?? "-",
+      input.httpStatus ?? "-",
+      input.resetAtMs ?? "-",
+    ].join("|");
+    const bucket = this.issues.get(key);
+    if (!bucket) {
+      this.issues.set(key, {
+        kind: input.kind,
+        code: input.code ?? null,
+        httpStatus: input.httpStatus ?? null,
+        retryable: input.retryable ?? null,
+        resetAtMs: input.resetAtMs ?? null,
+        message: input.message,
+        model: input.model ?? null,
+        sessionId: input.sessionId ?? null,
+        firstAtMs: input.timestampMs,
+        lastAtMs: input.timestampMs,
+        count: 1,
+      });
+      return;
+    }
+    bucket.count += 1;
+    bucket.firstAtMs = Math.min(bucket.firstAtMs, input.timestampMs);
+    // 展示用的原文取最近一次，避免聚合后的描述停在很久以前那条。
+    if (input.timestampMs >= bucket.lastAtMs) {
+      bucket.lastAtMs = input.timestampMs;
+      bucket.message = input.message;
+      bucket.model = input.model ?? null;
+      bucket.sessionId = input.sessionId ?? null;
+      bucket.retryable = input.retryable ?? bucket.retryable;
     }
   }
 
@@ -178,7 +249,27 @@ export class UsageAccumulator {
       days,
       hours,
       models,
+      issues: this.toIssues(),
     };
+  }
+
+  /** 最近的排前面；同一时刻按出现次数多的排前面。 */
+  private toIssues(): TokenUsageIssue[] {
+    return [...this.issues.values()]
+      .map((bucket) => ({
+        kind: bucket.kind,
+        code: bucket.code,
+        httpStatus: bucket.httpStatus,
+        retryable: bucket.retryable,
+        message: bucket.message,
+        model: bucket.model,
+        sessionId: bucket.sessionId,
+        firstAt: new Date(bucket.firstAtMs).toISOString(),
+        lastAt: new Date(bucket.lastAtMs).toISOString(),
+        count: bucket.count,
+        resetAt: bucket.resetAtMs === null ? null : new Date(bucket.resetAtMs).toISOString(),
+      }))
+      .sort((a, b) => (a.lastAt === b.lastAt ? b.count - a.count : a.lastAt < b.lastAt ? 1 : -1));
   }
 }
 
@@ -198,6 +289,7 @@ export function unavailableAgent(input: {
     days: [],
     hours: [],
     models: [],
+    issues: [],
   };
 }
 

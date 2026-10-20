@@ -8,7 +8,7 @@ import {
 import { AgentSummary } from "./agent-summary";
 import { DiskUsageEntry } from "./disk-usage";
 import { TokenBarChart } from "./bar-chart";
-import { formatCount, formatTokensDetailed, formatUsd } from "./format";
+import { formatCount, formatShortDateTime, formatTokensDetailed, formatUsd } from "./format";
 import { combineAgentWindows } from "./rollup";
 import { TOKEN_USAGE_WINDOW_OPTIONS, type TokenUsageWindowDays } from "./types";
 import { agentCollectionSettings } from "../shared/settings";
@@ -155,6 +155,10 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
 
   const totals = combined.totals;
   const availableAgents = combined.agents.filter((entry) => entry.agent.status === "available");
+  // 失败事件只看本机当天 0 点以来，和 7 / 30 天用量窗口无关，所以这里单独说明。
+  const agentsWithIssues = combined.agents.filter(
+    (entry) => (entry.agent.issues ?? []).length > 0,
+  );
 
   return (
     <View style={styles.screen}>
@@ -173,7 +177,7 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
           </View>
           <View style={styles.refreshGroup}>
             {payload.stale ? <Text style={styles.staleText}>缓存已过期</Text> : null}
-            <Text style={styles.fetchedAtText}>更新于 {formatFetchedAt(payload.fetchedAt)}</Text>
+            <Text style={styles.fetchedAtText}>更新于 {formatShortDateTime(payload.fetchedAt)}</Text>
             <Pressable onPress={handleRefresh} hitSlop={8}>
               <Text style={styles.refreshText}>{loading ? "刷新中…" : "刷新"}</Text>
             </Pressable>
@@ -198,6 +202,12 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
               <Metric styles={styles} label="积分" value={formatCount(totals.costCredits)} />
             ) : null}
           </View>
+          {agentsWithIssues.length > 0 ? (
+            <Text style={styles.issuesSummary}>
+              {agentsWithIssues.length} 个 agent 今天有失败请求：
+              {agentsWithIssues.map((entry) => entry.agent.displayName).join("、")}
+            </Text>
+          ) : null}
         </View>
 
         {availableAgents.length > 0 ? (
@@ -251,16 +261,7 @@ interface TokenUsageStyles {
   metric: object;
   metricValue: object;
   metricLabel: object;
-}
-
-function formatFetchedAt(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
-    return iso;
-  }
-  const hh = `${date.getHours()}`.padStart(2, "0");
-  const mm = `${date.getMinutes()}`.padStart(2, "0");
-  return `${date.getMonth() + 1}/${date.getDate()} ${hh}:${mm}`;
+  issuesSummary: object;
 }
 
 interface WindowOptionProps {
@@ -428,6 +429,11 @@ function useStyles(theme: Theme): TokenUsageStyles {
     },
     metricLabel: {
       color: theme.colors.foregroundMuted,
+      fontSize: 12,
+    },
+    issuesSummary: {
+      marginTop: 8,
+      color: theme.colors.statusDanger,
       fontSize: 12,
     },
   };

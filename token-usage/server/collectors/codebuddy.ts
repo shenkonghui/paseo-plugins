@@ -3,6 +3,7 @@ import type { TokenUsageAgent } from "../types.js";
 import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
 import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
+import { classifyIssue, parseResetAt, type RawIssue } from "../issues.js";
 import type { TranscriptFile } from "../transcript-files.js";
 import { firstNumber, listTranscriptFiles, parseJsonLine, readLines } from "../transcript-files.js";
 
@@ -20,17 +21,30 @@ interface CodebuddyRawUsage {
   prompt_tokens_details?: { cached_tokens?: number };
 }
 
+/** 失败请求的原文：`providerData.error`（成功时该字段不存在）。 */
+interface CodebuddyError {
+  message?: string;
+  code?: number;
+  status?: number;
+  /** 注意：CodeBuddy 的字段名是 `isRetryable`，不是 `retryable`。 */
+  isRetryable?: boolean;
+  isNetworkError?: boolean;
+  isStreamTimeout?: boolean;
+}
+
 interface CodebuddyTranscriptEntry {
   timestamp?: number;
   providerData?: {
     model?: string;
     rawUsage?: CodebuddyRawUsage;
+    error?: CodebuddyError;
   };
 }
 
 /**
  * CodeBuddy keeps one JSONL transcript per session under `~/.codebuddy/projects`,
- * nested by working directory. Usage rides on the entries that made an LLM call.
+ * nested by working directory. Usage rides on the entries that made an LLM call,
+ * and failed calls carry `providerData.error` instead.
  */
 export class CodebuddyCollector implements TokenUsageCollector {
   readonly agentId = "codebuddy" as const;
@@ -51,30 +65,52 @@ export class CodebuddyCollector implements TokenUsageCollector {
       });
     }
 
+    // 失败事件只看当天 0 点以来，可能比 7 / 30 天用量窗口更晚；文件级过滤取两者更早的那个。
+    const scanCutoffMs = Math.min(context.cutoffMs, context.issueCutoffMs);
+
     for (const file of files) {
       await context.gate.maybeYield();
-      if (file.mtimeMs < context.cutoffMs) {
+      if (file.mtimeMs < scanCutoffMs) {
         continue;
       }
       // Transcripts rotate and get pruned while we read them; a vanished file is not an error.
       const lines = await readLines(file.filePath).catch(() => [] as string[]);
       for (const line of lines) {
         // Most lines are tool output; the substring test keeps JSON.parse off them.
-        if (!line.includes('"rawUsage"')) {
+        const hasUsage = line.includes('"rawUsage"');
+        const hasError = line.includes('"isRetryable"');
+        if (!hasUsage && !hasError) {
           continue;
         }
         const entry = parseJsonLine(line) as CodebuddyTranscriptEntry | undefined;
-        const usage = entry?.providerData?.rawUsage;
         const timestamp = entry?.timestamp;
-        if (!usage || typeof timestamp !== "number" || timestamp < context.cutoffMs) {
+        if (typeof timestamp !== "number") {
           continue;
         }
-        accumulator.record({
-          dayKey: localDayKey(timestamp),
-          hourKey: timestamp >= context.todayStartMs ? localHourKey(timestamp) : undefined,
-          sessionId: path.relative(root, file.filePath),
+        const usage = entry?.providerData?.rawUsage;
+        if (usage) {
+          if (timestamp < context.cutoffMs) {
+            continue;
+          }
+          accumulator.record({
+            dayKey: localDayKey(timestamp),
+            hourKey: timestamp >= context.todayStartMs ? localHourKey(timestamp) : undefined,
+            sessionId: path.relative(root, file.filePath),
+            model: entry?.providerData?.model,
+            delta: toUsageDelta(usage),
+          });
+          await context.gate.maybeYield();
+          continue;
+        }
+        const error = entry?.providerData?.error;
+        if (!error || timestamp < context.issueCutoffMs) {
+          continue;
+        }
+        recordIssue(accumulator, {
+          error,
+          timestampMs: timestamp,
           model: entry?.providerData?.model,
-          delta: toUsageDelta(usage),
+          sessionId: path.relative(root, file.filePath),
         });
         await context.gate.maybeYield();
       }
@@ -86,6 +122,41 @@ export class CodebuddyCollector implements TokenUsageCollector {
       status: "available",
     });
   }
+}
+
+function recordIssue(
+  accumulator: UsageAccumulator,
+  input: {
+    error: CodebuddyError;
+    timestampMs: number;
+    model?: string;
+    sessionId?: string;
+  },
+): void {
+  const message = input.error.message?.trim();
+  if (!message) {
+    // 没有原文就无法归类，也没有可展示的内容。
+    return;
+  }
+  const raw: RawIssue = {
+    message,
+    code: input.error.code,
+    httpStatus: input.error.status,
+    retryable: input.error.isRetryable,
+    isNetworkError: input.error.isNetworkError,
+    isStreamTimeout: input.error.isStreamTimeout,
+  };
+  accumulator.recordIssue({
+    kind: classifyIssue(raw),
+    message,
+    timestampMs: input.timestampMs,
+    code: raw.code,
+    httpStatus: raw.httpStatus,
+    retryable: raw.retryable,
+    resetAtMs: parseResetAt(message),
+    model: input.model,
+    sessionId: input.sessionId,
+  });
 }
 
 function toUsageDelta(usage: CodebuddyRawUsage): UsageDelta {

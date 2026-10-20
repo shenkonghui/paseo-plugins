@@ -7,6 +7,8 @@ export interface TokenUsageCollectContext {
   nowMs: number;
   /** Start of the oldest day inside the window, host-local. */
   cutoffMs: number;
+  /** 失败事件的回看下界（本机当天 0 点），与 7 / 30 天用量窗口无关。 */
+  issueCutoffMs: number;
   /** Start of today (host-local)，用来决定是否记录小时桶。 */
   todayStartMs: number;
   windowDays: number;

@@ -32,6 +32,38 @@ export const tokenUsageModelSchema = z.object({
 
 export const tokenUsageAgentIdSchema = z.enum(["codebuddy", "pi", "opencode", "devin", "qoder"]);
 
+/**
+ * 失败事件的归类。CodeBuddy / OpenCode 能给出结构化错误，其余 agent 目前拿不到，
+ * 因此 `issues` 常态为空数组。
+ */
+export const tokenUsageIssueKindSchema = z.enum([
+  "rate_limit",
+  "quota",
+  "auth",
+  "network",
+  "timeout",
+  "upstream",
+  "aborted",
+  "unknown",
+]);
+
+export const tokenUsageIssueSchema = z.object({
+  kind: tokenUsageIssueKindSchema,
+  /** provider 自己的错误码（如 CodeBuddy 的 6004）。 */
+  code: z.number().nullable(),
+  httpStatus: z.number().nullable(),
+  retryable: z.boolean().nullable(),
+  /** 原文，未翻译；同一条聚合里保留最近一次的。 */
+  message: z.string(),
+  model: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  firstAt: z.string(),
+  lastAt: z.string(),
+  count: z.number().int(),
+  /** 解析出的额度重置时间（ISO）；解析不出为 null。 */
+  resetAt: z.string().nullable(),
+});
+
 export const tokenUsageAgentSchema = z.object({
   agentId: tokenUsageAgentIdSchema,
   displayName: z.string(),
@@ -43,6 +75,8 @@ export const tokenUsageAgentSchema = z.object({
   /** 当天 0-23 点的用量；「今天」窗口的小时视图使用。 */
   hours: z.array(tokenUsageHourSchema).default([]),
   models: z.array(tokenUsageModelSchema),
+  /** 本机当天 0 点以来的失败事件，与 7 / 30 天用量窗口不联动。 */
+  issues: z.array(tokenUsageIssueSchema).default([]),
 });
 
 export const tokenUsageListRpc = defineRpc({
@@ -66,6 +100,8 @@ export type TokenUsageCounters = z.output<typeof tokenUsageCountersSchema>;
 export type TokenUsageDay = z.output<typeof tokenUsageDaySchema>;
 export type TokenUsageHour = z.output<typeof tokenUsageHourSchema>;
 export type TokenUsageModel = z.output<typeof tokenUsageModelSchema>;
+export type TokenUsageIssue = z.output<typeof tokenUsageIssueSchema>;
+export type TokenUsageIssueKind = z.output<typeof tokenUsageIssueKindSchema>;
 export type TokenUsageAgent = z.output<typeof tokenUsageAgentSchema>;
 export type TokenUsageListOutput = z.output<typeof tokenUsageListRpc.output>;
 
