@@ -8,12 +8,22 @@ type Theme = PluginScreenProps["theme"];
 /** 在内嵌视图中屏蔽的 ⌘ 组合键（小写）。 */
 const BLOCKED_META_KEYS = new Set(["e", "l"]);
 
+/** app 给会话输入框打的标记（`dataSet={{ composerInput: "" }}`），用来确认回车发生在输入框里。 */
+const COMPOSER_INPUT_ATTR = "data-composer-input";
+/** app 的 composer 根节点：工具栏和其中的「发送」按钮都在里面。 */
+const COMPOSER_ROOT_SELECTOR = '[data-testid="message-input-root"]';
+
 interface KeyEventLike {
   key?: unknown;
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
   shiftKey?: boolean;
+  /** 输入法组合中（中文选字时回车）：不能当成发送。 */
+  isComposing?: boolean;
+  keyCode?: number;
+  defaultPrevented?: boolean;
+  target?: unknown;
   preventDefault(): void;
   stopImmediatePropagation(): void;
 }
@@ -21,6 +31,18 @@ interface KeyEventLike {
 interface EmbedWindow {
   addEventListener(type: string, listener: (event: KeyEventLike) => void, capture?: boolean): void;
   removeEventListener(type: string, listener: (event: KeyEventLike) => void, capture?: boolean): void;
+}
+
+/** 只用到的一点点 DOM 能力（插件 tsconfig 不带 lib.dom，所以自己声明）。 */
+interface EmbedComposerElement {
+  closest(selector: string): EmbedComposerElement | null;
+  hasAttribute(name: string): boolean;
+  getAttribute(name: string): string | null;
+  click(): void;
+  /** 输入框只读（会话只读 / 正在听写 / 实时语音）时不接管回车。 */
+  readOnly?: boolean;
+  disabled?: boolean;
+  querySelectorAll(selector: string): { length: number; item(index: number): EmbedComposerElement | null };
 }
 
 /** 只藏左侧栏：命中的容器打上这个属性，由注入的样式隐藏（!important 压过 React 的内联样式）。 */
@@ -83,6 +105,64 @@ function installFrameKeys(win: unknown): () => void {
     return () => {};
   }
   return () => target.removeEventListener("keydown", handler, true);
+}
+
+/** 从 composer 根节点里找「发送」按钮：它是工具栏右侧的最后一个按钮。 */
+function findComposerSubmit(root: EmbedComposerElement): EmbedComposerElement | null {
+  const buttons = root.querySelectorAll('[role="button"]');
+  const last = buttons.length > 0 ? buttons.item(buttons.length - 1) : null;
+  if (!last) return null;
+  // 禁用时（输入框为空 / 正在加载）不代点，等同于桌面形态「没内容时回车不发送」。
+  if (last.getAttribute("aria-disabled") === "true" || last.hasAttribute("disabled")) return null;
+  return last;
+}
+
+/**
+ * 内嵌的 app 在窄面板里会退化成「紧凑形态」：那里**回车只换行、不发送**
+ * （app 的规则是 `submitOnEnter = isWeb && !isCompact`，而面板宽度基本都低于它的 md 断点，
+ * 所以内嵌视图里永远只能点「发送」按钮）。这里把「回车发送」补回来：
+ *
+ * - 听 **keypress**（冒泡）：app 只在 keydown 上处理回车，一旦它 preventDefault（自动补全选词、
+ *   桌面形态的直接发送），浏览器就不再派发 keypress——所以「收到 keypress」= app 没处理这次回车，
+ *   不会重复发送 / 打断斜杠命令补全；
+ * - 只接管**焦点在会话输入框**（`data-composer-input`）且输入框可编辑时的回车；
+ * - 输入法组合中（中文选字）的回车不处理；
+ * - 最后代替用户点一下 composer 的「发送」按钮，走 app 自己的发送逻辑（排队 / steering / 附件都不受影响）。
+ *
+ * 与侧栏注入一样，这是绕过 SDK 的 DOM 操作：app 改版可能失效，失效时退化成原来的「只能点按钮」。
+ * 返回清理函数。
+ */
+function installEmbeddedEnterSubmit(win: unknown): () => void {
+  if (!win || typeof win !== "object") return () => {};
+  const target = win as EmbedWindow;
+  const handler = (event: KeyEventLike) => {
+    if (event.key !== "Enter") return;
+    if (event.shiftKey === true || event.metaKey === true || event.ctrlKey === true) return;
+    if (event.altKey === true) return;
+    // 与 app 的 isImeComposingKeyboardEvent 保持一致：组合中的回车交给输入法。
+    if (event.isComposing === true || event.keyCode === 229) return;
+    if (event.defaultPrevented === true) return;
+    const element = event.target as EmbedComposerElement | null;
+    if (!element || typeof element.hasAttribute !== "function") return;
+    if (!element.hasAttribute(COMPOSER_INPUT_ATTR)) return;
+    // 只读（会话只读 / 听写 / 实时语音）时输入框不可编辑，此时回车不该发送。
+    if (element.readOnly === true || element.disabled === true) return;
+    const root = typeof element.closest === "function" ? element.closest(COMPOSER_ROOT_SELECTOR) : null;
+    if (!root) return;
+    const submit = findComposerSubmit(root);
+    if (!submit) return;
+    // 拦掉换行，然后代替用户点「发送」。
+    event.preventDefault();
+    submit.click();
+  };
+  try {
+    target.addEventListener("keypress", handler);
+  } catch {
+    return () => {};
+  }
+  return () => {
+    target.removeEventListener("keypress", handler);
+  };
 }
 
 /**
@@ -233,6 +313,7 @@ export function EmbeddedAgent({
     frameCleanup.current = combineCleanups(
       installSidebarHiding(frame.contentWindow),
       installFrameKeys(frame.contentWindow),
+      installEmbeddedEnterSubmit(frame.contentWindow),
       watchFrameActivation(frame.contentWindow, () => activateRef.current()),
     );
   }, []);
