@@ -70,6 +70,8 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
       toolbar: {
         flexDirection: "row" as const,
         alignItems: "center" as const,
+        // 窄屏放不下时让按钮换行，否则「刷新」会被挤出可视区。
+        flexWrap: compact ? ("wrap" as const) : ("nowrap" as const),
         gap: comfortable ? 8 : 6,
         paddingHorizontal: compact ? 12 : 20,
         paddingTop: comfortable ? (compact ? 12 : 20) : 8,
@@ -80,7 +82,11 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
         fontSize: comfortable ? 14 : 13,
         fontWeight: "600" as const,
       },
-      toolbarMeta: { color: theme.colors.foregroundMuted, fontSize: comfortable ? 12 : 11 },
+      toolbarMeta: {
+        color: theme.colors.foregroundMuted,
+        fontSize: comfortable ? 12 : 11,
+        flexShrink: 1,
+      },
       spacer: { flex: 1 },
       ghostButton: {
         borderRadius: 8,
