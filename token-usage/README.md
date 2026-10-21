@@ -20,7 +20,7 @@ Token 监控面板:读取本机各 agent CLI 自己的本地数据,汇总展示 
 | --- | --- | --- |
 | CodeBuddy | `~/.codebuddy/projects/**/*.jsonl`(国内版) + `~/.paseo/homes/*/.codebuddy/projects/**/*.jsonl`(国际版，跑在 Paseo 独立 HOME 下) | JSONL 行扫描(`providerData.rawUsage`)，多个 home 合并为一张卡片 |
 | Pi | `~/.pi/agent/sessions/**/*.jsonl` | JSONL 行扫描(`message.usage`) |
-| OpenCode | XDG data 下 opencode 的 SQLite | `node:sqlite` 只读 keyset 分页 |
+| OpenCode | XDG data 下 opencode 的 SQLite(`session_message`;1.19 用 `message` 表) | `node:sqlite` 只读 keyset 分页,按表是否存在自动选择 |
 | Devin | XDG data 下 `devin/cli/sessions.db` | `node:sqlite` 只读物化 CTE 聚合(2GB 级库,一次扫描) |
 | Qoder | `~/.qoder-cn/projects/**/*.jsonl`(国内版) + `~/.qoder/projects/**/*.jsonl`(国际版) | JSONL 行扫描(`message.usage`,含 `<uuid>/subagents/*.jsonl`,按 `request_id` 去重) |
 
@@ -31,7 +31,7 @@ Paseo 只会把这类请求当成「没有返回」,而 agent CLI 的本地数�
 | agent | 原始字段 | 能否采集 |
 | --- | --- | --- |
 | CodeBuddy | `providerData.error`(`code` / `status` / `message` / `isRetryable` / `isNetworkError` / `isStreamTimeout`) | 是 |
-| OpenCode | `session_message.data.error`(`type` / `message` / `status` / `response.body`) | 是 |
+| OpenCode | `session_message.data.error`(`type` / `message` / `status` / `response.body`);1.19 的 `message.data.error`(`name` / `data.message` / `data.statusCode` / `data.isRetryable`) | 是 |
 | Pi / Qoder / Devin | 没有结构化错误字段 | 否(issues 恒为空) |
 
 每条聚合记录固定为这些字段(拿不到的维度是 `null`,不虚构):

@@ -76,6 +76,10 @@ describe("OpencodeCollector", () => {
     const db = new Database(path.join(dbDir, "opencode.db"));
     db.exec(`create table session_message (
       session_id text, id text, type text, time_created integer, data text)`);
+    // 新版才会建 message；空表必须回退到 session_message。
+    db.exec(`create table message (
+      id text primary key, session_id text, time_created integer,
+      time_updated integer, data text)`);
     const nowMs = Date.now();
     const day1 = localMidnight(nowMs) + 3_600_000;
     const day2 = localMidnight(nowMs - 86_400_000) + 3_600_000;
@@ -165,6 +169,101 @@ describe("OpencodeCollector", () => {
       resetAt: null,
     });
     expect(agent.issues[1].message).toBe("Go usage limit exceeded");
+  });
+
+  it("reads the v2 message table with its role-based payload", async () => {
+    // 1.19 的库把消息写在 message 表，旧的 session_message 被清空；用独立 data home 隔离。
+    const v2Home = path.join(tempRoot, "v2-data");
+    const previousDataHome = process.env.XDG_DATA_HOME;
+    process.env.XDG_DATA_HOME = v2Home;
+    const dbDir = path.join(v2Home, "opencode");
+    fs.mkdirSync(dbDir, { recursive: true });
+    const Database = await sqliteModule();
+    const db = new Database(path.join(dbDir, "opencode.db"));
+    db.exec(`create table message (
+      id text primary key, session_id text, time_created integer,
+      time_updated integer, data text);
+      create table session_message (
+        session_id text, id text, type text, time_created integer, data text)`);
+    const nowMs = Date.now();
+    const ts = localMidnight(nowMs) + 3_600_000;
+    const insert = db.prepare("insert into message values (?, ?, ?, ?, ?)");
+    const assistant = (id: string, time: number, data: object) =>
+      insert.run(
+        id,
+        "s1",
+        time,
+        time,
+        JSON.stringify({ role: "assistant", time: { created: time }, ...data }),
+      );
+    assistant("m1", ts, {
+      tokens: { input: 100, output: 10, reasoning: 2, cache: { read: 30, write: 4 } },
+      cost: 0.136,
+      modelID: "deepseek-v4.1-flash",
+      providerID: "opencode-go",
+    });
+    // 免费模型 cost 为 0，token 仍然要计入。
+    assistant("m2", ts + 1, {
+      tokens: { input: 7, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+      cost: 0,
+      modelID: "deepseek-v4.1-flash-free",
+      providerID: "opencode",
+    });
+    insert.run(
+      "u1",
+      "s1",
+      ts + 2,
+      ts + 2,
+      JSON.stringify({ role: "user", tokens: { input: 999, output: 999 } }),
+    );
+    // 新错误结构：{name, data:{message,statusCode,isRetryable}}。
+    assistant("e1", ts + 3, {
+      tokens: { input: 0, output: 0 },
+      error: {
+        name: "APIError",
+        data: { message: "rate limited by upstream", statusCode: 429, isRetryable: true },
+      },
+      modelID: "deepseek-v4.1-flash",
+      providerID: "opencode-go",
+    });
+    assistant("e2", ts + 4, {
+      tokens: { input: 0, output: 0 },
+      error: { name: "MessageAbortedError", data: { message: "Step interrupted" } },
+      modelID: "deepseek-v4.1-flash",
+      providerID: "opencode-go",
+    });
+    // 两套表都有数据时只认新表，避免旧行重复计数。
+    db.prepare("insert into session_message values (?, ?, 'assistant', ?, ?)").run(
+      "s0",
+      "old1",
+      ts,
+      JSON.stringify({ tokens: { input: 999, output: 999 }, model: { id: "old-model" } }),
+    );
+    db.close();
+
+    try {
+      const agent = await new OpencodeCollector().collect(makeContext(nowMs));
+
+      expect(agent.status).toBe("available");
+      expect(agent.sessions).toBe(1);
+      expect(agent.totals.inputTokens).toBe(107);
+      expect(agent.totals.outputTokens).toBe(11);
+      expect(agent.totals.reasoningTokens).toBe(2);
+      expect(agent.totals.cacheReadTokens).toBe(30);
+      expect(agent.totals.cacheWriteTokens).toBe(4);
+      expect(agent.totals.totalTokens).toBe(107 + 11 + 2 + 30 + 4);
+      expect(agent.totals.costUsd).toBeCloseTo(0.136, 6);
+      expect(agent.models?.[0]?.model).toBe("deepseek-v4.1-flash");
+      expect(agent.issues.map((issue) => issue.kind)).toEqual(["aborted", "rate_limit"]);
+      expect(agent.issues[1]).toMatchObject({
+        httpStatus: 429,
+        retryable: true,
+        model: "deepseek-v4.1-flash",
+      });
+    } finally {
+      if (previousDataHome === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previousDataHome;
+    }
   });
 
   it("reports unavailable when the database is missing", async () => {
