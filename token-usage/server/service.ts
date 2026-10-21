@@ -355,10 +355,11 @@ export class TokenUsageService {
         const result: TokenUsageListResult = { ...parsed.result };
         const days =
           typeof result.rangeDays === "number" ? result.rangeDays : parsed.windowDays;
-        // 旧快照缺 hours（小时视图上线前）或 issues（失败事件上线前）时忽略它，
-        // 让首次请求重新采集。
+        // 旧快照缺 hours（小时视图上线前）或 issues（失败事件上线前）或 sources（采集路径上线前）
+        // 时忽略它，让首次请求重新采集。
         const hasHours = result.agents.every((agent) => Array.isArray(agent.hours));
         const hasIssues = result.agents.every((agent) => Array.isArray(agent.issues));
+        const hasSources = result.agents.every((agent) => Array.isArray(agent.sources));
         // 失败事件口径变为「只看当天」后，旧快照里可能还留着昨天的失败；
         // 跨天或口径变更时直接丢掉快照重采，避免刚打开还显示昨晚的限流。
         const todayStart = windowCutoffMs(this.now(), 1);
@@ -368,7 +369,7 @@ export class TokenUsageService {
             return !Number.isFinite(lastAt) || lastAt >= todayStart;
           }),
         );
-        if (typeof days === "number" && hasHours && hasIssues && issuesWithinToday) {
+        if (typeof days === "number" && hasHours && hasIssues && hasSources && issuesWithinToday) {
           const disabled = new Set(Array.isArray(parsed.disabled) ? parsed.disabled : []);
           this.caches.set(cacheKeyFor(days, disabled), {
             fetchedAtMs: parsed.fetchedAtMs,

@@ -220,6 +220,7 @@ export class UsageAccumulator {
     displayName: string;
     status: TokenUsageAgent["status"];
     error?: string | null;
+    sources?: string[];
   }): TokenUsageAgent {
     const days: TokenUsageDay[] = [...this.days.entries()]
       .map(([date, bucket]) =>
@@ -244,6 +245,7 @@ export class UsageAccumulator {
       displayName: input.displayName,
       status: input.status,
       error: input.error ?? null,
+      sources: input.sources ?? [],
       totals: toWireCounters(this.totals),
       sessions: this.sessions.size,
       days,
@@ -278,12 +280,14 @@ export function unavailableAgent(input: {
   displayName: string;
   error: string;
   status?: TokenUsageAgent["status"];
+  sources?: string[];
 }): TokenUsageAgent {
   return {
     agentId: input.agentId,
     displayName: input.displayName,
     status: input.status ?? "unavailable",
     error: input.error,
+    sources: input.sources ?? [],
     totals: toWireCounters(emptyCounters()),
     sessions: 0,
     days: [],

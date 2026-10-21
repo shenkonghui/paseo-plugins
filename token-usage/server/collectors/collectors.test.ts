@@ -293,6 +293,51 @@ describe("CodebuddyCollector", () => {
       expect.objectContaining({ hour: 1, totalTokens: 17, requests: 2, sessions: 1 }),
     ]);
     expect(agent.issues).toEqual([]);
+    expect(agent.sources).toEqual(["~/.codebuddy/projects"]);
+  });
+
+  it("also reads Paseo-managed homes (international build)", async () => {
+    // 国际版跑在 Paseo 的独立 home 下（provider env 里设了 HOME）。
+    const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-codebuddy-homes-"));
+    const nowMs = Date.now();
+    const ts = localMidnight(nowMs) + 3_600_000;
+    const usage = (input: number, output: number) =>
+      JSON.stringify({
+        timestamp: ts,
+        providerData: { rawUsage: { prompt_tokens: input, completion_tokens: output } },
+      });
+    const domestic = path.join(isolated, ".codebuddy", "projects", "proj");
+    const intl = path.join(
+      isolated,
+      ".paseo",
+      "homes",
+      "codebuddy-intl",
+      ".codebuddy",
+      "projects",
+      "proj",
+    );
+    fs.mkdirSync(domestic, { recursive: true });
+    fs.mkdirSync(intl, { recursive: true });
+    fs.writeFileSync(path.join(domestic, "d.jsonl"), usage(10, 5));
+    fs.writeFileSync(path.join(intl, "i.jsonl"), usage(1, 1));
+
+    try {
+      const agent = await new CodebuddyCollector().collect({
+        ...makeContext(nowMs),
+        homeDir: isolated,
+      });
+
+      expect(agent.status).toBe("available");
+      expect(agent.totals.inputTokens).toBe(11);
+      expect(agent.totals.outputTokens).toBe(6);
+      expect(agent.sessions).toBe(2);
+      expect(agent.sources).toEqual([
+        "~/.codebuddy/projects",
+        "~/.paseo/homes/codebuddy-intl/.codebuddy/projects",
+      ]);
+    } finally {
+      fs.rmSync(isolated, { recursive: true, force: true });
+    }
   });
 
   it("turns providerData.error entries into aggregated issues", async () => {

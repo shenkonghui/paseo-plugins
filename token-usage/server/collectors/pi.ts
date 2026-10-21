@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { TokenUsageAgent } from "../types.js";
-import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
+import { displaySourcePath, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
 import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
 import type { TranscriptFile } from "../transcript-files.js";
@@ -36,6 +36,7 @@ export class PiCollector implements TokenUsageCollector {
 
   async collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent> {
     const root = path.join(context.homeDir, ".pi", "agent", "sessions");
+    const source = displaySourcePath(context.homeDir, root);
     const accumulator = new UsageAccumulator();
 
     let files: TranscriptFile[];
@@ -45,7 +46,8 @@ export class PiCollector implements TokenUsageCollector {
       return unavailableAgent({
         agentId: this.agentId,
         displayName: this.displayName,
-        error: `No Pi sessions at ${root}: ${describe(error)}`,
+        error: `No Pi sessions at ${source}: ${describe(error)}`,
+        sources: [source],
       });
     }
 
@@ -87,6 +89,7 @@ export class PiCollector implements TokenUsageCollector {
       agentId: this.agentId,
       displayName: this.displayName,
       status: "available",
+      sources: [source],
     });
   }
 }

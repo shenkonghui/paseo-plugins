@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { TokenUsageAgent } from "../types.js";
-import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
+import { displaySourcePath, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
 import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
 import {
@@ -28,6 +28,7 @@ export class OpencodeCollector implements TokenUsageCollector {
 
   async collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent> {
     const databasePath = resolveDatabasePath(context.homeDir);
+    const source = displaySourcePath(context.homeDir, databasePath);
     const accumulator = new UsageAccumulator();
 
     let db: SqliteDatabase;
@@ -42,6 +43,7 @@ export class OpencodeCollector implements TokenUsageCollector {
           error instanceof SqliteMissingError || error instanceof SqliteUnavailableError
             ? "unavailable"
             : "error",
+        sources: [source],
       });
     }
 
@@ -74,6 +76,7 @@ export class OpencodeCollector implements TokenUsageCollector {
         displayName: this.displayName,
         error: messageOf(error),
         status: "error",
+        sources: [source],
       });
     } finally {
       db.close();
@@ -83,6 +86,7 @@ export class OpencodeCollector implements TokenUsageCollector {
       agentId: this.agentId,
       displayName: this.displayName,
       status: "available",
+      sources: [source],
     });
   }
 }

@@ -1,8 +1,8 @@
 import type { TokenUsageAgent } from "../types.js";
-import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
+import { displaySourcePath, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
 import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
-import { collectDevinRows, type DevinUsageRow } from "./devin-worker.js";
+import { collectDevinRows, resolveDatabasePath, type DevinUsageRow } from "./devin-worker.js";
 
 export class DevinCollector implements TokenUsageCollector {
   readonly agentId = "devin" as const;
@@ -10,6 +10,10 @@ export class DevinCollector implements TokenUsageCollector {
 
   async collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent> {
     const accumulator = new UsageAccumulator();
+    const source = displaySourcePath(
+      context.homeDir,
+      resolveDatabasePath(context.homeDir),
+    );
 
     let rows: DevinUsageRow[];
     try {
@@ -25,6 +29,7 @@ export class DevinCollector implements TokenUsageCollector {
         displayName: this.displayName,
         error: message,
         status: "unavailable",
+        sources: [source],
       });
     }
 
@@ -37,6 +42,7 @@ export class DevinCollector implements TokenUsageCollector {
       agentId: this.agentId,
       displayName: this.displayName,
       status: "available",
+      sources: [source],
     });
   }
 }

@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { TokenUsageLogger } from "./types.js";
 import type { TokenUsageAgent, TokenUsageAgentId } from "./types.js";
 import type { YieldGate } from "./yield-gate.js";
@@ -20,4 +21,16 @@ export interface TokenUsageCollector {
   agentId: TokenUsageAgentId;
   displayName: string;
   collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent>;
+}
+
+/** 数据源路径的展示形式：home 下缩成 `~/...`，其余保留绝对路径。 */
+export function displaySourcePath(homeDir: string, target: string): string {
+  const relative = path.relative(homeDir, target);
+  if (relative.length === 0) {
+    return "~";
+  }
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return target;
+  }
+  return `~/${relative.split(path.sep).join("/")}`;
 }

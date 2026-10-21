@@ -69,6 +69,8 @@ export const tokenUsageAgentSchema = z.object({
   displayName: z.string(),
   status: z.enum(["available", "unavailable", "error", "disabled"]),
   error: z.string().nullable(),
+  /** 实际读取的数据源路径（`~` 表示宿主 home），仅用于展示。 */
+  sources: z.array(z.string()).default([]),
   totals: tokenUsageCountersSchema,
   sessions: z.number().int(),
   days: z.array(tokenUsageDaySchema),

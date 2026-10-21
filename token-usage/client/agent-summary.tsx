@@ -28,18 +28,27 @@ export function AgentSummary({ agent, window, theme, enabled, onToggle }: AgentS
     <View style={[styles.card, enabled ? null : styles.cardPaused]}>
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
-          <Text style={styles.name}>{agent.displayName}</Text>
+          <Text numberOfLines={1} style={styles.name}>
+            {agent.displayName}
+          </Text>
           {agent.status === "disabled" ? (
             <Text style={styles.pausedBadge}>已暂停采集</Text>
           ) : agent.status !== "available" ? (
             <Text style={styles.statusBadge}>不可用</Text>
           ) : null}
         </View>
-        <Switch
-          value={enabled}
-          onValueChange={onToggle}
-          accessibilityLabel={`${agent.displayName} 采集开关`}
-        />
+        <View style={styles.headerRight}>
+          {agent.sources.length > 0 ? (
+            <Text numberOfLines={1} style={styles.sources}>
+              {agent.sources.join(" · ")}
+            </Text>
+          ) : null}
+          <Switch
+            value={enabled}
+            onValueChange={onToggle}
+            accessibilityLabel={`${agent.displayName} 采集开关`}
+          />
+        </View>
       </View>
       {agent.status !== "available" && agent.status !== "disabled" && agent.error ? (
         <Text style={styles.error}>{agent.error}</Text>
@@ -163,6 +172,22 @@ function useStyles(theme: Theme) {
       alignItems: "center" as const,
       gap: 8,
       flexShrink: 1,
+    },
+    headerRight: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "flex-end" as const,
+      gap: 8,
+      flexShrink: 1,
+      // react-native-web 里 flex item 默认 min-width:auto，不置 0 文本不会省略。
+      minWidth: 0,
+    },
+    // 采集路径：弱化小字，放在开关左侧，超长时单行省略。
+    sources: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 11,
+      flexShrink: 1,
+      textAlign: "right" as const,
     },
     pausedBadge: {
       color: theme.colors.foregroundMuted,

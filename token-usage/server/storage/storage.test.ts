@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createYieldGate } from "../yield-gate.js";
 import { createFileSessionStorage } from "./file-sessions.js";
+import { createStorageTargets } from "./index.js";
 import { createQoderStorage } from "./qoder-sessions.js";
 import { DevinStorage, OpencodeStorage } from "./sqlite-sessions.js";
 import type { StorageContext } from "./types.js";
@@ -109,6 +110,45 @@ describe("CodeBuddy file storage", () => {
     const result = await storage.cleanup(context(Date.now()));
     expect(result.status).toBe("skipped");
     expect(result.removedSessions).toBe(0);
+  });
+});
+
+describe("CodeBuddy merged storage across Paseo homes", () => {
+  const storage = createStorageTargets().find((target) => target.agentId === "codebuddy")!;
+
+  it("counts and cleans the default home and Paseo-managed homes", async () => {
+    // 国际版跑在 Paseo 的独立 home 下（~/.paseo/homes/*），与主目录各有一份数据。
+    const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-codebuddy-homes-"));
+    try {
+      const domesticRoot = path.join(isolated, ".codebuddy");
+      const domestic = path.join(domesticRoot, "projects", "proj");
+      const intlRoot = path.join(isolated, ".paseo", "homes", "codebuddy-intl", ".codebuddy");
+      const intl = path.join(intlRoot, "projects", "proj");
+      fs.mkdirSync(domestic, { recursive: true });
+      fs.mkdirSync(intl, { recursive: true });
+      fs.writeFileSync(path.join(domestic, "old.jsonl"), "x".repeat(200));
+      fs.writeFileSync(path.join(intl, "old-intl.jsonl"), "y".repeat(100));
+      ageFile(path.join(domestic, "old.jsonl"), 40);
+      ageFile(path.join(intl, "old-intl.jsonl"), 40);
+
+      const nowMs = Date.now();
+      const base = { ...context(nowMs), homeDir: isolated };
+      const measured = await storage.measure(base);
+      expect(measured.status).toBe("available");
+      expect(measured.paths).toEqual([domesticRoot, intlRoot]);
+      expect(measured.sessionCount).toBe(2);
+      expect(measured.staleSessionCount).toBe(2);
+      expect(measured.staleSessionBytes).toBe(300);
+
+      const result = await storage.cleanup(base);
+      expect(result.status).toBe("cleaned");
+      expect(result.removedSessions).toBe(2);
+      expect(result.freedBytes).toBe(300);
+      expect(fs.existsSync(path.join(domestic, "old.jsonl"))).toBe(false);
+      expect(fs.existsSync(path.join(intl, "old-intl.jsonl"))).toBe(false);
+    } finally {
+      fs.rmSync(isolated, { recursive: true, force: true });
+    }
   });
 });
 

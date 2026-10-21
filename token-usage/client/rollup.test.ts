@@ -27,6 +27,7 @@ function agent(
     displayName: "Pi",
     status,
     error: null,
+    sources: [],
     totals: { inputTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 },
     sessions: 0,
     days,

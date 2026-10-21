@@ -129,6 +129,108 @@ export function createFileSessionStorage(
   return { agentId, displayName, measure, cleanup };
 }
 
+export interface FileSessionRoot {
+  /** 数据根目录：用于统计「本地总占用」。 */
+  rootDir: string;
+  /** 会话文件所在目录。 */
+  sessionsDir: string;
+}
+
+export interface MergedFileSessionStorageOptions {
+  agentId: TokenUsageAgentId;
+  displayName: string;
+  /** 同一 agent 的多个数据根（国内 / 国际版、Paseo 独立 home……）。 */
+  roots(homeDir: string): FileSessionRoot[];
+  extension: string;
+  includeSiblingDirs: boolean;
+}
+
+/**
+ * 多个数据根共用一个 agentId：占用相加、清理合并，面板上只出现一张卡片。
+ * 与单个数据根一样，会话的附属目录（`<uuid>/`）一并计入并清理。
+ */
+export function createMergedFileSessionStorage(
+  options: MergedFileSessionStorageOptions,
+): TokenUsageStorageTarget {
+  const { agentId, displayName } = options;
+
+  function targetsFor(homeDir: string): TokenUsageStorageTarget[] {
+    return options.roots(homeDir).map((root) =>
+      createFileSessionStorage({
+        agentId,
+        displayName,
+        rootDir: () => root.rootDir,
+        sessionsDir: () => root.sessionsDir,
+        extension: options.extension,
+        includeSiblingDirs: options.includeSiblingDirs,
+      }),
+    );
+  }
+
+  return {
+    agentId,
+    displayName,
+
+    async measure(context: StorageContext): Promise<AgentDiskUsage> {
+      const results = await Promise.all(
+        targetsFor(context.homeDir).map((target) => target.measure(context)),
+      );
+      const available = results.filter((result) => result.status === "available");
+      if (available.length === 0) {
+        // 所有根都不存在时才算「未安装」；只有部分根存在时按存在的那份统计。
+        const status = results.some((result) => result.status === "error") ? "error" : "unavailable";
+        return {
+          agentId,
+          displayName,
+          status,
+          error: joinErrors(results.map((result) => result.error)) ?? null,
+          totalBytes: 0,
+          paths: results.flatMap((result) => result.paths),
+          sessionCount: 0,
+          sessionBytes: 0,
+          staleSessionCount: 0,
+          staleSessionBytes: 0,
+        };
+      }
+      return {
+        agentId,
+        displayName,
+        status: "available",
+        error: null,
+        totalBytes: sum(available, (result) => result.totalBytes),
+        paths: available.flatMap((result) => result.paths),
+        sessionCount: sum(available, (result) => result.sessionCount),
+        sessionBytes: sum(available, (result) => result.sessionBytes),
+        staleSessionCount: sum(available, (result) => result.staleSessionCount),
+        staleSessionBytes: sum(available, (result) => result.staleSessionBytes),
+      };
+    },
+
+    async cleanup(context: StorageContext): Promise<AgentCleanupResult> {
+      const results: AgentCleanupResult[] = [];
+      for (const target of targetsFor(context.homeDir)) {
+        results.push(await target.cleanup(context));
+      }
+      const removedSessions = sum(results, (result) => result.removedSessions);
+      const freedBytes = sum(results, (result) => result.freedBytes);
+      const hasError = results.some((result) => result.status === "error");
+      return {
+        agentId,
+        displayName,
+        status: removedSessions > 0 ? "cleaned" : hasError ? "error" : "skipped",
+        removedSessions,
+        freedBytes,
+        error: joinErrors(results.map((result) => result.error)) ?? null,
+      };
+    },
+  };
+}
+
+function joinErrors(errors: readonly (string | null)[]): string | undefined {
+  const present = errors.filter((error): error is string => !!error);
+  return present.length > 0 ? present.slice(0, 3).join("; ") : undefined;
+}
+
 function sum<T>(items: readonly T[], pick: (item: T) => number): number {
   return items.reduce((total, item) => total + pick(item), 0);
 }

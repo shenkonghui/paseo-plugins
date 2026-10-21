@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { TokenUsageAgent } from "../types.js";
-import type { TokenUsageCollectContext, TokenUsageCollector } from "../collector.js";
+import { displaySourcePath, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
 import { localDayKey, localHourKey } from "../day-window.js";
 import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
 import type { TranscriptFile } from "../transcript-files.js";
@@ -47,11 +47,11 @@ export class QoderCollector implements TokenUsageCollector {
       path.join(context.homeDir, ".qoder-cn", "projects"),
       path.join(context.homeDir, ".qoder", "projects"),
     ];
+    const sources = roots.map((root) => displaySourcePath(context.homeDir, root));
     const accumulator = new UsageAccumulator();
     // 流式重试理论上可能把同一个 request_id 写成两行，按 id 兜底去重。
     const seenRequestIds = new Set<string>();
-    const missingRoots: string[] = [];
-    let readableRoots = 0;
+    const readableRoots: string[] = [];
 
     for (const root of roots) {
       let files: TranscriptFile[];
@@ -59,10 +59,9 @@ export class QoderCollector implements TokenUsageCollector {
         files = await listTranscriptFiles(root);
       } catch {
         // 没装国内版 / 国际版都正常：只要有一个根存在就算可用。
-        missingRoots.push(root);
         continue;
       }
-      readableRoots += 1;
+      readableRoots.push(root);
 
       for (const file of files) {
         await context.gate.maybeYield();
@@ -104,11 +103,12 @@ export class QoderCollector implements TokenUsageCollector {
       }
     }
 
-    if (readableRoots === 0) {
+    if (readableRoots.length === 0) {
       return unavailableAgent({
         agentId: this.agentId,
         displayName: this.displayName,
-        error: `No Qoder transcripts at ${roots.join(" or ")}`,
+        error: `No Qoder transcripts at ${sources.join(" or ")}`,
+        sources,
       });
     }
 
@@ -116,6 +116,7 @@ export class QoderCollector implements TokenUsageCollector {
       agentId: this.agentId,
       displayName: this.displayName,
       status: "available",
+      sources: readableRoots.map((root) => displaySourcePath(context.homeDir, root)),
     });
   }
 }

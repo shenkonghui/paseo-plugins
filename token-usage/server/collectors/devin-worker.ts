@@ -108,7 +108,7 @@ export async function collectDevinRows(request: DevinCollectRequest): Promise<De
   }
 }
 
-function resolveDatabasePath(homeDir: string): string {
+export function resolveDatabasePath(homeDir: string): string {
   const dataHome = process.env.XDG_DATA_HOME || path.join(homeDir, ".local", "share");
   return path.join(dataHome, "devin", "cli", "sessions.db");
 }

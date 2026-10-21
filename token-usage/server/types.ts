@@ -87,6 +87,8 @@ export interface TokenUsageAgent {
   displayName: string;
   status: "available" | "unavailable" | "error" | "disabled";
   error: string | null;
+  /** 实际读取的数据源路径（`~` 表示宿主 home），仅用于展示。 */
+  sources: string[];
   totals: TokenUsageCounters;
   sessions: number;
   days: TokenUsageDay[];
