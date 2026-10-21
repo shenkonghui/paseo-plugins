@@ -17,8 +17,8 @@ import { tokenUsageListRpc, type TokenUsageListOutput } from "../shared/rpc";
 type Theme = PluginSurfaceProps["theme"];
 
 export function TokenUsageSurface(props: PluginSurfaceProps) {
-  const { theme } = props;
-  const styles = useMemo(() => useStyles(theme), [theme]);
+  const { theme, layout } = props;
+  const styles = useMemo(() => useStyles(theme, layout.compact), [theme, layout.compact]);
   const listUsage = useRpc(tokenUsageListRpc);
   // 默认展示当天用量（切换器仍可切到近 7 / 30 天）。
   const [windowDays, setWindowDays] = useState<TokenUsageWindowDays>(1);
@@ -163,7 +163,7 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
   return (
     <View style={styles.screen}>
       <ScrollView contentContainerStyle={styles.body}>
-        <View style={styles.toolbar}>
+        <View style={[styles.toolbar, layout.compact ? styles.toolbarStacked : null]}>
           <View style={styles.windowSwitch}>
             {TOKEN_USAGE_WINDOW_OPTIONS.map((days) => (
               <WindowOption
@@ -175,10 +175,20 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
               />
             ))}
           </View>
-          <View style={styles.refreshGroup}>
-            {payload.stale ? <Text style={styles.staleText}>缓存已过期</Text> : null}
-            <Text style={styles.fetchedAtText}>更新于 {formatShortDateTime(payload.fetchedAt)}</Text>
-            <Pressable onPress={handleRefresh} hitSlop={8}>
+          <View style={[styles.refreshGroup, layout.compact ? styles.refreshGroupStacked : null]}>
+            <View style={styles.refreshMeta}>
+              {payload.stale ? <Text style={styles.staleText}>缓存已过期</Text> : null}
+              <Text numberOfLines={1} style={styles.fetchedAtText}>
+                更新于 {formatShortDateTime(payload.fetchedAt)}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="刷新用量"
+              onPress={handleRefresh}
+              hitSlop={8}
+              style={styles.refreshButton}
+            >
               <Text style={styles.refreshText}>{loading ? "刷新中…" : "刷新"}</Text>
             </Pressable>
           </View>
@@ -243,10 +253,14 @@ interface TokenUsageStyles {
   retryButton: object;
   retryText: object;
   refreshGroup: object;
+  refreshGroupStacked: object;
+  refreshMeta: object;
   staleText: object;
   fetchedAtText: object;
+  refreshButton: object;
   refreshText: object;
   toolbar: object;
+  toolbarStacked: object;
   windowSwitch: object;
   windowOption: object;
   windowOptionActive: object;
@@ -304,7 +318,7 @@ function Metric({
   );
 }
 
-function useStyles(theme: Theme): TokenUsageStyles {
+function useStyles(theme: Theme, compact: boolean): TokenUsageStyles {
   return {
     screen: {
       flex: 1,
@@ -318,7 +332,7 @@ function useStyles(theme: Theme): TokenUsageStyles {
       padding: 20,
     },
     body: {
-      padding: 16,
+      padding: compact ? 12 : 16,
       gap: 12,
     },
     muted: {
@@ -345,6 +359,20 @@ function useStyles(theme: Theme): TokenUsageStyles {
       flexDirection: "row",
       alignItems: "center",
       gap: 8,
+      flexShrink: 1,
+      minWidth: 0,
+    },
+    // 窄屏时刷新组独占一行，「更新于」靠左、按钮靠右。
+    refreshGroupStacked: {
+      justifyContent: "space-between",
+      alignSelf: "stretch",
+    },
+    refreshMeta: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      flexShrink: 1,
+      minWidth: 0,
     },
     staleText: {
       color: theme.colors.statusWarning,
@@ -353,6 +381,15 @@ function useStyles(theme: Theme): TokenUsageStyles {
     fetchedAtText: {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
+      flexShrink: 1,
+    },
+    refreshButton: {
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+      paddingHorizontal: 12,
+      paddingVertical: 4,
     },
     refreshText: {
       color: theme.colors.accent,
@@ -362,6 +399,13 @@ function useStyles(theme: Theme): TokenUsageStyles {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    // 窄屏放不下时竖排，避免把右侧的刷新按钮挤出可视区。
+    toolbarStacked: {
+      flexDirection: "column",
+      alignItems: "stretch",
     },
     windowSwitch: {
       flexDirection: "row",
