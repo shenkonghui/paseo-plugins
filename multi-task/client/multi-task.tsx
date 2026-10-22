@@ -139,10 +139,24 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
         paddingVertical: 6,
       },
       hiddenRowActive: { borderColor: theme.colors.accent },
+      hiddenMain: {
+        flex: 1,
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        // react-native-web 里 flex item 默认 min-width:auto，不置 0 标题不会省略。
+        minWidth: 0,
+      },
       hiddenDot: { width: 8, height: 8, borderRadius: 4 },
-      hiddenTitle: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const },
+      hiddenTitle: {
+        color: theme.colors.foreground,
+        fontSize: 13,
+        fontWeight: "600" as const,
+        flexShrink: 1,
+      },
       hiddenMeta: { color: theme.colors.foregroundMuted, fontSize: 12, flexShrink: 1 },
-      hiddenSpacer: { flex: 1 },
+      hiddenRemove: { paddingHorizontal: 2, paddingVertical: 2 },
+      hiddenRemoveText: { color: theme.colors.statusDanger, fontSize: 12 },
       hiddenExpand: { color: theme.colors.accent, fontSize: 12 },
     };
   }, [theme, compact, toolbarSize]);
@@ -566,37 +580,58 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
             <View style={styles.hiddenList}>
               {collapsedViews.map((view) => {
                 const info = resolveInfo(view);
+                const label = info.workspaceLabel ?? view.workspaceId;
+                const expand = () => {
+                  setActiveViewId(view.id);
+                  setViewCollapsed(view.id, false);
+                };
                 return (
-                  <Pressable
+                  <View
                     key={view.id}
-                    accessibilityRole="button"
-                    accessibilityLabel={`展开 ${info.workspaceLabel ?? view.workspaceId}`}
-                    onPress={() => {
-                      setActiveViewId(view.id);
-                      setViewCollapsed(view.id, false);
-                    }}
                     style={[
                       styles.hiddenRow,
                       view.id === activeViewId ? styles.hiddenRowActive : null,
                     ]}
                   >
-                    <View
-                      style={[
-                        styles.hiddenDot,
-                        { backgroundColor: statusColor(info.agentStatus, theme) },
-                      ]}
-                    />
-                    <Text numberOfLines={1} style={styles.hiddenTitle}>
-                      {info.workspaceLabel ?? view.workspaceId}
-                    </Text>
-                    {info.agentTitle ? (
-                      <Text numberOfLines={1} style={styles.hiddenMeta}>
-                        {info.agentTitle}
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`展开 ${label}`}
+                      onPress={expand}
+                      style={styles.hiddenMain}
+                    >
+                      <View
+                        style={[
+                          styles.hiddenDot,
+                          { backgroundColor: statusColor(info.agentStatus, theme) },
+                        ]}
+                      />
+                      <Text numberOfLines={1} style={styles.hiddenTitle}>
+                        {label}
                       </Text>
-                    ) : null}
-                    <View style={styles.hiddenSpacer} />
-                    <Text style={styles.hiddenExpand}>展开</Text>
-                  </Pressable>
+                      {info.agentTitle ? (
+                        <Text numberOfLines={1} style={styles.hiddenMeta}>
+                          {info.agentTitle}
+                        </Text>
+                      ) : null}
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`移除 ${label}`}
+                      onPress={() => requestRemove(view.id)}
+                      hitSlop={4}
+                      style={styles.hiddenRemove}
+                    >
+                      <Text style={styles.hiddenRemoveText}>移除</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`展开 ${label}`}
+                      onPress={expand}
+                      hitSlop={4}
+                    >
+                      <Text style={styles.hiddenExpand}>展开</Text>
+                    </Pressable>
+                  </View>
                 );
               })}
             </View>
