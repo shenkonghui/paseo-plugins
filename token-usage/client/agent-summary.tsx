@@ -21,11 +21,33 @@ interface AgentSummaryProps {
 
 export function AgentSummary({ agent, window, theme, enabled, onToggle }: AgentSummaryProps) {
   const styles = useMemo(() => useStyles(theme), [theme]);
+  // 未开启采集的 agent 服务端不读数据源，没有可展示的用量，只留一行开关。
+  if (!enabled) {
+    return (
+      <View style={[styles.card, styles.cardCollapsed]}>
+        <View style={styles.headerRow}>
+          <View style={styles.headerLeft}>
+            <Text numberOfLines={1} style={styles.name}>
+              {agent.displayName}
+            </Text>
+            <Text style={styles.pausedBadge}>已暂停采集</Text>
+          </View>
+          <View style={styles.headerRight}>
+            <Switch
+              value={false}
+              onValueChange={onToggle}
+              accessibilityLabel={`${agent.displayName} 采集开关`}
+            />
+          </View>
+        </View>
+      </View>
+    );
+  }
   const totals = window.totals;
   const issues = agent.issues ?? [];
   const visibleIssues = issues.slice(0, MAX_VISIBLE_ISSUES);
   return (
-    <View style={[styles.card, enabled ? null : styles.cardPaused]}>
+    <View style={styles.card}>
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
           <Text numberOfLines={1} style={styles.name}>
@@ -69,8 +91,6 @@ export function AgentSummary({ agent, window, theme, enabled, onToggle }: AgentS
         <Metric styles={styles} label="总 tokens" value={formatTokensDetailed(totals.totalTokens)} />
         <Metric styles={styles} label="请求" value={formatCount(totals.requests)} />
         <Metric styles={styles} label="会话" value={formatCount(window.sessions)} />
-      </View>
-      <View style={styles.metricsRow}>
         <Metric styles={styles} label="输入" value={formatTokensDetailed(totals.inputTokens)} />
         <Metric styles={styles} label="输出" value={formatTokensDetailed(totals.outputTokens)} />
         {totals.cacheReadTokens !== null ? (
@@ -158,8 +178,10 @@ function useStyles(theme: Theme) {
       padding: 12,
       gap: 8,
     },
-    cardPaused: {
-      opacity: 0.6,
+    // 折叠成一行：上下留白收紧，内容只有名称、状态和开关。
+    cardCollapsed: {
+      paddingVertical: 6,
+      paddingHorizontal: 12,
     },
     headerRow: {
       flexDirection: "row" as const,
@@ -236,13 +258,14 @@ function useStyles(theme: Theme) {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
     },
+    // 所有指标排成一行；窗口太窄时再自动换行。
     metricsRow: {
       flexDirection: "row" as const,
       flexWrap: "wrap" as const,
-      gap: 12,
+      gap: 10,
     },
     metric: {
-      minWidth: 64,
+      minWidth: 56,
     },
     metricValue: {
       color: theme.colors.foreground,
