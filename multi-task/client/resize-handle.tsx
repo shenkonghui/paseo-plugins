@@ -23,7 +23,7 @@ interface ResizeHandleProps {
   hoverColor: string;
   onStart: (position: { x: number; y: number }) => void;
   onMove: (position: { x: number; y: number }) => void;
-  onEnd: () => void;
+  onEnd: (position: { x: number; y: number }) => void;
 }
 
 /**
@@ -59,14 +59,20 @@ export function ResizeHandle({
       // 阻止选中文字，也避免触发外层 Pressable 的激活 / 滚动。
       event.preventDefault?.();
       event.stopPropagation?.();
-      handlers.current.onStart({ x: event.clientX ?? 0, y: event.clientY ?? 0 });
+      let lastX = event.clientX ?? 0;
+      let lastY = event.clientY ?? 0;
+      handlers.current.onStart({ x: lastX, y: lastY });
       const handleMove = (move: PointerLike) => {
-        handlers.current.onMove({ x: move.clientX ?? 0, y: move.clientY ?? 0 });
+        lastX = move.clientX ?? lastX;
+        lastY = move.clientY ?? lastY;
+        handlers.current.onMove({ x: lastX, y: lastY });
       };
-      const finish = () => {
+      const finish = (event: PointerLike) => {
+        lastX = event.clientX ?? lastX;
+        lastY = event.clientY ?? lastY;
         detach?.();
         detach = null;
-        handlers.current.onEnd();
+        handlers.current.onEnd({ x: lastX, y: lastY });
       };
       detach = () => {
         globalTarget.removeEventListener("pointermove", handleMove, true);

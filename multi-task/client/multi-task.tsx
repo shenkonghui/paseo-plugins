@@ -134,6 +134,20 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
         bottom: 0,
         zIndex: 20,
       },
+      resizeGhostVertical: {
+        position: "absolute" as const,
+        top: 0,
+        bottom: 0,
+        width: 2,
+        backgroundColor: theme.colors.accent,
+      },
+      resizeGhostHorizontal: {
+        position: "absolute" as const,
+        left: 0,
+        right: 0,
+        height: 2,
+        backgroundColor: theme.colors.accent,
+      },
       hiddenList: { gap: 6, paddingBottom: 8 },
       hiddenRow: {
         flexDirection: "row" as const,
@@ -261,9 +275,32 @@ function computePaneRows(
   }));
 }
 
+interface MeasurableElement {
+  getBoundingClientRect(): { left: number; top: number };
+}
+
+interface GhostElementLike {
+  style: { left?: string; top?: string };
+}
+
 type ResizeSession =
-  | { kind: "col"; rowIndex: number; columnIndex: number; startX: number; widths: number[] }
-  | { kind: "row"; rowIndex: number; startY: number; heights: number[] };
+  | {
+      kind: "col";
+      rowIndex: number;
+      columnIndex: number;
+      startX: number;
+      /** 预览线初始横坐标（相对屏幕根视图）。 */
+      ghostStart: number;
+      widths: number[];
+    }
+  | {
+      kind: "row";
+      rowIndex: number;
+      startY: number;
+      /** 预览线初始纵坐标（相对屏幕根视图）。 */
+      ghostStart: number;
+      heights: number[];
+    };
 
 /** agent 的最近活跃时间，用来在一个 workspace 里挑「当前」的 agent。 */
 function agentActivityTime(agent: PaseoAgent): number {
@@ -506,161 +543,154 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     [views, persist],
   );
 
-  const [resizePreview, setResizePreview] = useState<ResizeSession | null>(null);
-  // 遮罩只覆盖「正在拖拽」的时段；预览会多保留一会儿，等持久化后的权重生效。
-  const [resizing, setResizing] = useState(false);
+  const screenRef = useRef<View>(null);
+  const ghostRef = useRef<View>(null);
   const resizeRef = useRef<ResizeSession | null>(null);
+  // 拖动期间只渲染一条预览线，面板尺寸保持不变；松手后才一次性应用。
+  // 内嵌面板是完整的 Paseo 实例，逐帧改 iframe 尺寸既卡又容易把内嵌页拖白。
+  const [dragOverlay, setDragOverlay] = useState<{
+    kind: "col" | "row";
+    left: number;
+    top: number;
+  } | null>(null);
 
-  // 拖拽行内分隔条：只改相邻两个面板的宽度，两者总宽不变。
+  const screenRect = useCallback(() => {
+    const node = screenRef.current as unknown as MeasurableElement | null;
+    if (!node || typeof node.getBoundingClientRect !== "function") return { left: 0, top: 0 };
+    return node.getBoundingClientRect();
+  }, []);
+
+  // 直接改 DOM 位置，避免每次 pointermove 都触发 React 渲染。
+  const moveGhost = useCallback((kind: "col" | "row", left: number, top: number) => {
+    const ghost = ghostRef.current as unknown as GhostElementLike | null;
+    if (!ghost?.style) return;
+    if (kind === "col") ghost.style.left = `${left}px`;
+    else ghost.style.top = `${top}px`;
+  }, []);
+
   const startColumnResize = useCallback(
-    (rowIndex: number, columnIndex: number, x: number) => {
+    (rowIndex: number, columnIndex: number, position: { x: number; y: number }) => {
       const row = layoutRows[rowIndex];
       if (!row) return;
-      const session: ResizeSession = {
+      const rect = screenRect();
+      const ghostStart = position.x - rect.left;
+      resizeRef.current = {
         kind: "col",
         rowIndex,
         columnIndex,
-        startX: x,
+        startX: position.x,
+        ghostStart,
         widths: row.widths.slice(),
       };
-      resizeRef.current = session;
-      setResizePreview(session);
-      setResizing(true);
+      setDragOverlay({ kind: "col", left: ghostStart, top: position.y - rect.top });
     },
-    [layoutRows],
+    [layoutRows, screenRect],
   );
 
-  // 拖拽行间分隔条：只改相邻两行的高度，两者总高不变。
   const startRowResize = useCallback(
-    (rowIndex: number, y: number) => {
+    (rowIndex: number, position: { x: number; y: number }) => {
       if (layoutRows.length <= 1) return;
-      const session: ResizeSession = {
+      const rect = screenRect();
+      const ghostStart = position.y - rect.top;
+      resizeRef.current = {
         kind: "row",
         rowIndex,
-        startY: y,
+        startY: position.y,
+        ghostStart,
         heights: layoutRows.map((row) => row.height),
       };
-      resizeRef.current = session;
-      setResizePreview(session);
-      setResizing(true);
+      setDragOverlay({ kind: "row", left: position.x - rect.left, top: ghostStart });
     },
-    [layoutRows],
+    [layoutRows, screenRect],
   );
 
   const moveResize = useCallback(
-    (x: number, y: number) => {
+    (position: { x: number; y: number }) => {
       const session = resizeRef.current;
       if (!session) return;
       if (session.kind === "col") {
+        const before = session.widths[session.columnIndex - 1] ?? 0;
+        const total = before + (session.widths[session.columnIndex] ?? 0);
+        // 预览线也按最小宽度夹一下，松手时不会突然跳到限制位置。
+        const min = Math.min(minPaneWidth, total / 2);
+        const delta = Math.max(
+          min - before,
+          Math.min(total - min - before, position.x - session.startX),
+        );
+        moveGhost("col", session.ghostStart + delta, 0);
+        return;
+      }
+      const before = session.heights[session.rowIndex - 1] ?? 0;
+      const total = before + (session.heights[session.rowIndex] ?? 0);
+      const min = Math.min(minRowHeight, total / 2);
+      const delta = Math.max(
+        min - before,
+        Math.min(total - min - before, position.y - session.startY),
+      );
+      moveGhost("row", 0, session.ghostStart + delta);
+    },
+    [moveGhost, minPaneWidth, minRowHeight],
+  );
+
+  const endResize = useCallback(
+    (position: { x: number; y: number }) => {
+      const session = resizeRef.current;
+      resizeRef.current = null;
+      setDragOverlay(null);
+      if (!session) return;
+      if (session.kind === "col") {
+        const row = layoutRows[session.rowIndex];
+        if (!row) return;
         const widths = session.widths.slice();
         const index = session.columnIndex;
         const before = widths[index - 1] ?? 0;
         const total = before + (widths[index] ?? 0);
         const min = Math.min(minPaneWidth, total / 2);
-        const next = Math.min(total - min, Math.max(min, before + (x - session.startX)));
+        const next = Math.min(total - min, Math.max(min, before + (position.x - session.startX)));
+        // 只是点了一下分隔条、没真的拖动：不写设置，避免把均分布局误标成「手动调整」。
+        if (Math.abs(next - before) < 0.5) return;
         widths[index - 1] = next;
         widths[index] = total - next;
-        const preview: ResizeSession = { ...session, widths };
-        resizeRef.current = preview;
-        setResizePreview(preview);
+        const weights = new Map(
+          row.views.map((view, rowColumn) => [view.id, widths[rowColumn] ?? 1]),
+        );
+        void persist(
+          views.map((view) => {
+            const weight = weights.get(view.id);
+            return weight == null ? view : { ...view, widthWeight: Math.max(1, weight) };
+          }),
+        );
         return;
       }
+      // 行高权重是跨行归一化的：一次拖拽后把所有行都写成当前像素高度，保持单位一致。
       const heights = session.heights.slice();
       const index = session.rowIndex;
       const before = heights[index - 1] ?? 0;
       const total = before + (heights[index] ?? 0);
       const min = Math.min(minRowHeight, total / 2);
-      const next = Math.min(total - min, Math.max(min, before + (y - session.startY)));
+      const next = Math.min(total - min, Math.max(min, before + (position.y - session.startY)));
+      if (Math.abs(next - before) < 0.5) return;
       heights[index - 1] = next;
       heights[index] = total - next;
-      const preview: ResizeSession = { ...session, heights };
-      resizeRef.current = preview;
-      setResizePreview(preview);
-    },
-    [minPaneWidth, minRowHeight],
-  );
-
-  const endResize = useCallback(() => {
-    const session = resizeRef.current;
-    resizeRef.current = null;
-    setResizing(false);
-    if (!session) return;
-    // 兜底：写失败 / 长时间没回时，把预览清掉，回到实际生效的布局。
-    globalThis.setTimeout(() => {
-      setResizePreview((current) => (current === session ? null : current));
-    }, 1200);
-    if (session.kind === "col") {
-      const row = layoutRows[session.rowIndex];
-      if (!row) return;
-      // 只是点了一下分隔条、没真的拖动：不写设置，避免把均分布局误标成「手动调整」。
-      const moved = row.widths.some(
-        (width, index) => Math.abs(width - (session.widths[index] ?? width)) >= 0.5,
+      const rowIndexById = new Map<string, number>();
+      layoutRows.forEach((row, rowIndex) =>
+        row.views.forEach((view) => rowIndexById.set(view.id, rowIndex)),
       );
-      if (!moved) return;
-      const weights = new Map(row.views.map((view, index) => [view.id, session.widths[index] ?? 1]));
       void persist(
         views.map((view) => {
-          const weight = weights.get(view.id);
-          return weight == null ? view : { ...view, widthWeight: Math.max(1, weight) };
+          const rowIndex = rowIndexById.get(view.id);
+          if (rowIndex == null) return view;
+          return { ...view, heightWeight: Math.max(1, heights[rowIndex] ?? 1) };
         }),
       );
-      return;
-    }
-    // 行高权重是跨行归一化的：一次拖拽后把所有行都写成当前像素高度，保持单位一致。
-    const moved = layoutRows.some(
-      (row, index) => Math.abs(row.height - (session.heights[index] ?? row.height)) >= 0.5,
-    );
-    if (!moved) return;
-    const rowIndexById = new Map<string, number>();
-    layoutRows.forEach((row, index) => row.views.forEach((view) => rowIndexById.set(view.id, index)));
-    void persist(
-      views.map((view) => {
-        const index = rowIndexById.get(view.id);
-        if (index == null) return view;
-        return { ...view, heightWeight: Math.max(1, session.heights[index] ?? 1) };
-      }),
-    );
-  }, [layoutRows, persist, views]);
-
-  // 拖拽过程中用预览尺寸渲染；松手后由持久化的权重接管。
-  const displayRows = useMemo(() => {
-    if (!resizePreview) return layoutRows;
-    if (resizePreview.kind === "col") {
-      return layoutRows.map((row, index) =>
-        index === resizePreview.rowIndex ? { ...row, widths: resizePreview.widths } : row,
-      );
-    }
-    return layoutRows.map((row, index) => ({
-      ...row,
-      height: resizePreview.heights[index] ?? row.height,
-    }));
-  }, [layoutRows, resizePreview]);
+    },
+    [layoutRows, persist, views, minPaneWidth, minRowHeight],
+  );
 
   const hasManualLayout = useMemo(
     () => views.some((view) => view.widthWeight != null || view.heightWeight != null),
     [views],
   );
-
-  // 预览保留到持久化后的权重渲染到位（避免松手瞬间闪回旧尺寸）。
-  useEffect(() => {
-    if (!resizePreview || resizing) return;
-    if (resizePreview.kind === "col") {
-      const row = layoutRows[resizePreview.rowIndex];
-      if (!row) {
-        setResizePreview(null);
-        return;
-      }
-      const same = row.widths.every(
-        (width, index) => Math.abs(width - (resizePreview.widths[index] ?? width)) < 1,
-      );
-      if (same) setResizePreview(null);
-      return;
-    }
-    const same = layoutRows.every(
-      (row, index) => Math.abs(row.height - (resizePreview.heights[index] ?? row.height)) < 1,
-    );
-    if (same) setResizePreview(null);
-  }, [layoutRows, resizePreview, resizing]);
 
   const resetLayout = useCallback(() => {
     void persist(
@@ -729,7 +759,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   }
 
   return (
-    <View style={styles.screen}>
+    <View style={styles.screen} ref={screenRef}>
       {toolbarCollapsed ? (
         <View style={styles.toolbar}>
           <Pressable
@@ -871,7 +901,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
           >
             {grid ? (
               <ScrollView style={styles.panesScroll}>
-                {displayRows.map((row, rowIndex) => (
+                {layoutRows.map((row, rowIndex) => (
                   <View key={row.views[0]?.id ?? rowIndex}>
                     {rowIndex > 0 ? (
                       <ResizeHandle
@@ -879,8 +909,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
                         size={gap}
                         color={theme.colors.border}
                         hoverColor={theme.colors.accent}
-                        onStart={({ y }) => startRowResize(rowIndex, y)}
-                        onMove={(position) => moveResize(position.x, position.y)}
+                        onStart={(position) => startRowResize(rowIndex, position)}
+                        onMove={moveResize}
                         onEnd={endResize}
                       />
                     ) : null}
@@ -893,8 +923,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
                               size={gap}
                               color={theme.colors.border}
                               hoverColor={theme.colors.accent}
-                              onStart={({ x }) => startColumnResize(rowIndex, columnIndex, x)}
-                              onMove={(position) => moveResize(position.x, position.y)}
+                              onStart={(position) => startColumnResize(rowIndex, columnIndex, position)}
+                              onMove={moveResize}
                               onEnd={endResize}
                             />
                           ) : null}
@@ -928,15 +958,23 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
         </View>
       )}
 
-      {resizing && resizePreview ? (
+      {dragOverlay ? (
         <View
           style={[
             styles.resizeShield,
             {
-              cursor: resizePreview.kind === "col" ? "col-resize" : "row-resize",
+              cursor: dragOverlay.kind === "col" ? "col-resize" : "row-resize",
             } as unknown as ViewStyle,
           ]}
-        />
+        >
+          <View
+            ref={ghostRef}
+            style={[
+              dragOverlay.kind === "col" ? styles.resizeGhostVertical : styles.resizeGhostHorizontal,
+              dragOverlay.kind === "col" ? { left: dragOverlay.left } : { top: dragOverlay.top },
+            ]}
+          />
+        </View>
       ) : null}
 
       <RemoveConfirm

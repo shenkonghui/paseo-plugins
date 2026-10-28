@@ -60,6 +60,7 @@ interface EmbedStyleElement {
 interface EmbedElementLike {
   setAttribute(name: string, value: string): void;
   hasAttribute(name: string): boolean;
+  removeAttribute?(name: string): void;
   parentElement: EmbedElementLike | null;
   getBoundingClientRect?(): { width: number; height: number };
 }
@@ -68,6 +69,7 @@ interface EmbedDocumentLike {
   getElementById(id: string): unknown;
   createElement(tagName: string): EmbedStyleElement;
   head?: { appendChild(node: unknown): void } | null;
+  body?: EmbedElementLike | null;
   querySelector(selector: string): EmbedElementLike | null;
   documentElement?: unknown;
 }
@@ -187,18 +189,36 @@ function watchFrameActivation(win: unknown, onActivate: () => void): () => void 
 
 /** 从 resize 手柄向上找到左侧栏容器（比它更宽的就是主区域了），打上隐藏标记。 */
 function hideLeftSidebar(doc: EmbedDocumentLike): void {
+  const root = (doc.documentElement ?? null) as EmbedElementLike | null;
+  const isDocRoot = (node: EmbedElementLike | null | undefined) =>
+    node != null && (node === doc.body || (root != null && node === root));
+
+  const marked = doc.querySelector(`[${HIDE_ATTR}]`);
+  if (isDocRoot(marked)) {
+    // 旧版本在面板窄于 460px 时可能把标记打到 body / html 上，整个内嵌页会变空白。
+    marked?.removeAttribute?.(HIDE_ATTR);
+  } else if (marked) {
+    // 已经藏在合法容器上：该容器 display:none 后宽度为 0，没法再靠宽度识别，保持现状即可。
+    return;
+  }
+
   const handle = doc.querySelector('[data-testid="left-sidebar-resize-handle"]');
   if (!handle) return;
   let node: EmbedElementLike | null = handle;
   let container: EmbedElementLike | null = null;
+  let foundMainArea = false;
   while (node) {
-    const rect = node.getBoundingClientRect?.();
-    const width = rect ? rect.width : 0;
-    if (width >= SIDEBAR_MAX_WIDTH) break;
+    // 必须先见到主区域再藏：面板本身比侧栏阈值还窄时继续往上会藏到 body / html。
+    if (isDocRoot(node)) break;
+    const width = node.getBoundingClientRect?.()?.width ?? 0;
+    if (width >= SIDEBAR_MAX_WIDTH) {
+      foundMainArea = true;
+      break;
+    }
     if (width > 0) container = node;
     node = node.parentElement;
   }
-  if (!container) return;
+  if (!foundMainArea || !container) return;
   if (!container.hasAttribute(HIDE_ATTR)) container.setAttribute(HIDE_ATTR, "");
 }
 

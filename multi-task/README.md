@@ -35,10 +35,13 @@
 
 - 面板之间的**间隙就是分隔条**：默认显示一条细线，鼠标移上去变成 accent 色并显示 `col-resize` / `row-resize` 光标。
 - 拖拽**行内分隔条**改变相邻两个面板的宽度（两者总宽不变）；拖拽**行间分隔条**改变相邻两行的高度（两者总高不变）。
+- 拖动时只显示一条 accent 预览线，**松手后才一次性应用尺寸**——内嵌面板是完整的 Paseo 实例，逐帧改 iframe 尺寸既卡又容易把内嵌页拖白。
+- 拖动过程直接改预览线的 DOM 样式，不触发 React 重渲染。
 - 有最小尺寸限制（紧凑模式宽 150px / 高 200px，舒适模式宽 190px / 高 220px）；窗口整体不够高时保持最小高度并纵向滚动。
 - 调整结果**持久化**在面板设置里（`widthWeight` / `heightWeight`），刷新 / 重启后保留；窗口尺寸变化时按权重等比缩放。
 - 手动调整过布局后，工具栏会出现「重置布局」按钮，一键恢复等分平铺。
 - 拖拽期间会盖一层透明遮罩：内嵌 iframe 是独立文档，不这么做指针移到 iframe 上就收不到 `pointermove` 了。
+- 侧栏隐藏脚本只在能确认「主区域」时生效：面宽比侧栏阈值（460px）还窄时不隐藏，避免误藏到 `body` / `html` 把整个内嵌页变空白。
 - 隐藏 / 展开、增删面板后，剩余面板仍按各自权重渲染，不需要重新调整。
 
 ## 4. 面板内容
@@ -74,6 +77,8 @@
 
 **侧栏处理**：内嵌的是完整 app 实例，自带左侧 workspace 栏与右侧 Explorer。插件**只藏左侧栏、保留右侧 Explorer**——app 没有提供隐藏它们的 URL 参数，所以在同源 iframe 里注入一段 CSS：`:has(> [data-testid="left-sidebar-resize-handle"]){display:none!important}`。
 这段注入是**尽力而为**的：依赖 app 的 DOM 结构与 `:has()`（Chromium 105+ / Electron 满足），app 改版可能失效；跨源时拿不到 `contentDocument`，不会注入。想连右侧也藏起来，在 `client/embedded-agent.tsx` 的 `HIDE_LEFT_SIDEBAR_CSS` 里补一条 `[data-testid="workspace-explorer-sidebar"]{display:none!important}` 即可。
+
+**窄面板保护**：找左侧栏容器时会向上走到「主区域」（宽度 ≥ 460px）为止；如果面板本身比 460px 还窄、根本找不到主区域，就不隐藏侧栏（交给 app 的紧凑形态），绝不把 `body` / `html` 标成隐藏。旧版本误标到根节点上的标记会自动清掉，避免整个内嵌页空白。
 
 **屏蔽内嵌视图的快捷键**：内嵌视图里 `⌘E` / `⌘L` 会在 iframe 的 window 上被捕获并吃掉（`preventDefault` + `stopImmediatePropagation`），避免它们触发 app 自身的动作。要增删按键，改 `client/embedded-agent.tsx` 里的 `BLOCKED_META_KEYS`。注意：Electron 主进程级菜单加速键无法从渲染进程拦截。
 
