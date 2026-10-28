@@ -10,7 +10,6 @@ import {
   multiTaskSettings,
   type MultiTaskToolbarSize,
   type MultiTaskView,
-  type MultiTaskViewMode,
 } from "../shared/settings";
 import { AgentPane, statusColor, type AgentPaneInfo } from "./agent-pane";
 import { WorkspacePicker, workspaceLabel } from "./agent-picker";
@@ -361,19 +360,11 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
         return;
       }
       const id = makeViewId();
-      void persist([
-        ...views,
-        {
-          id,
-          workspaceId,
-          // 有 DOM 时默认内嵌原生会话；原生平台只能自绘。
-          mode: canEmbed ? "embedded" : "stream",
-          collapsed: false,
-        },
-      ]);
+      // 面板只保留内嵌原生视图；没有 DOM（原生客户端）时面板内部自动退化为自绘对话流。
+      void persist([...views, { id, workspaceId, collapsed: false }]);
       setActiveViewId(id);
     },
-    [existingWorkspaceIds, views, persist, canEmbed],
+    [existingWorkspaceIds, views, persist],
   );
 
   const requestRemove = useCallback((viewId: string) => {
@@ -386,13 +377,6 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     setActiveViewId((current) => (current === pendingRemovalId ? null : current));
     setPendingRemovalId(null);
   }, [pendingRemovalId, views, persist]);
-
-  const setViewMode = useCallback(
-    (viewId: string, mode: MultiTaskViewMode) => {
-      void persist(views.map((view) => (view.id === viewId ? { ...view, mode } : view)));
-    },
-    [views, persist],
-  );
 
   const agentIdFor = useCallback(
     (view: MultiTaskView): string | null => agentForWorkspace(view.workspaceId)?.id ?? null,
@@ -665,7 +649,6 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
                         onToggleCollapse={() => setViewCollapsed(view.id, !view.collapsed)}
                         onDrop={(dx, dy) => handleDrop(view.id, dx, dy)}
                         onRemove={requestRemove}
-                        onSetMode={(mode) => setViewMode(view.id, mode)}
                       />
                     ))}
                   </View>

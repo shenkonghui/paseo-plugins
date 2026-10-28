@@ -3,7 +3,7 @@ import { usePaseo } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, ScrollView, Text, View } from "react-native";
-import type { MultiTaskView, MultiTaskViewMode } from "../shared/settings";
+import type { MultiTaskView } from "../shared/settings";
 import { EmbeddedAgent } from "./embedded-agent";
 import { EntryView } from "./entry-view";
 import { STATUS_LABELS, useAgentTimeline } from "./timeline";
@@ -37,7 +37,6 @@ interface AgentPaneProps {
   /** 拖动头部结束后回调：给出相对起点的位移，由外层换算新的顺序。 */
   onDrop: (dx: number, dy: number) => void;
   onRemove: (viewId: string) => void;
-  onSetMode: (mode: MultiTaskViewMode) => void;
 }
 
 /** 拖动用到的 DOM 事件/目标的最小结构，避免依赖 DOM 类型（插件 tsconfig 不带 lib.dom）。 */
@@ -203,14 +202,12 @@ export function AgentPane({
   onToggleCollapse,
   onDrop,
   onRemove,
-  onSetMode,
 }: AgentPaneProps) {
   const paseo = usePaseo();
   const toast = useToast();
   const styles = useStyles(theme);
-  // 没有 agent / 没有可用的内嵌地址时强制自绘。
-  const effectiveMode: MultiTaskViewMode = embedSrc ? view.mode : "stream";
-  const embedded = effectiveMode === "embedded" && embedSrc != null;
+  // 面板只保留内嵌原生视图；没有 DOM（拿不到内嵌地址）时自动退化为自绘对话流。
+  const embedded = embedSrc != null;
   const { entries, status, error } = useAgentTimeline(agentId ?? "", !embedded && agentId != null);
   const scrollRef = useRef<ScrollView>(null);
   // 只在贴近底部时自动跟随新内容；用户往上翻时不打断。
@@ -311,7 +308,7 @@ export function AgentPane({
     [],
   );
 
-  // 「打开」：在 app 主界面打开该 workspace（不要求有 agent，流 / 内嵌模式都能用）。
+  // 「打开」：在 app 主界面打开该 workspace（不要求有 agent，内嵌 / 退化视图都能用）。
   const handleOpen = useCallback(() => {
     onActivate();
     navigation?.openWorkspace?.({ workspaceId: view.workspaceId });
@@ -321,10 +318,6 @@ export function AgentPane({
     onActivate();
     onRemove(view.id);
   }, [onActivate, onRemove, view.id]);
-  const toggleMode = useCallback(() => {
-    onActivate();
-    onSetMode(effectiveMode === "embedded" ? "stream" : "embedded");
-  }, [onActivate, onSetMode, effectiveMode]);
 
   // 入队：清空输入框并把消息排到队尾；发送中再发即排队。
   const enqueue = useCallback(() => {
@@ -418,16 +411,6 @@ export function AgentPane({
             {secondaryTitle}
           </Text>
         </View>
-        {embedSrc ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={embedded ? "改用对话流" : "内嵌原生视图"}
-            onPress={toggleMode}
-            style={styles.iconButton}
-          >
-            <Text style={styles.iconButtonText}>{embedded ? "流" : "内嵌"}</Text>
-          </Pressable>
-        ) : null}
         {navigation ? (
           <Pressable
             accessibilityRole="button"
@@ -460,19 +443,10 @@ export function AgentPane({
       </View>
 
       {embedded && embedSrc ? (
-        <EmbeddedAgent
-          src={embedSrc}
-          theme={theme}
-          onActivate={onActivate}
-          onFallback={() => onSetMode("stream")}
-        />
+        <EmbeddedAgent src={embedSrc} theme={theme} onActivate={onActivate} />
       ) : agentId == null ? (
         <View style={styles.empty}>
-          <Text style={styles.emptyText}>
-            {embedSrc
-              ? "该 workspace 暂无 agent。切到「内嵌」可在该 workspace 新建 agent。"
-              : "该 workspace 暂无 agent。"}
-          </Text>
+          <Text style={styles.emptyText}>该 workspace 暂无 agent。</Text>
         </View>
       ) : error ? (
         <View style={styles.empty}>

@@ -271,20 +271,24 @@ function combineCleanups(...cleanups: Array<() => void>): () => void {
  * 用 iframe 内嵌 Paseo 原生会话（存在 DOM 时）。
  *
  * 注意：这会把整个 app 再加载一次——每个面板一个完整实例（含独立 websocket 与订阅），
- * 开销明显；加载失败或无 DOM 平台由上层回退到自绘对话流。
+ * 开销明显；无 DOM 平台由上层退化为自绘对话流，加载失败时在这里提供重试。
  */
 export function EmbeddedAgent({
   src,
   theme,
   onActivate,
-  onFallback,
 }: {
   src: string;
   theme: Theme;
   onActivate: () => void;
-  onFallback: () => void;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  // 加载失败时重新挂载 iframe：换 key 会重走一次加载，不做视图切换。
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const reload = useCallback(() => {
+    setStatus("loading");
+    setReloadNonce((value) => value + 1);
+  }, []);
   // 跨源时拿不到 contentDocument，所有 iframe 内的操作都会静默失效——显式提示出来。
   const [blocked, setBlocked] = useState(false);
   const frameCleanup = useRef<(() => void) | null>(null);
@@ -322,6 +326,7 @@ export function EmbeddedAgent({
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
       <iframe
+        key={reloadNonce}
         src={src}
         title="原生会话"
         onLoad={handleLoad}
@@ -346,20 +351,22 @@ export function EmbeddedAgent({
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, textAlign: "center" }}>
             {status === "error" ? "原生视图加载失败" : "正在加载原生视图…"}
           </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="改用对话流"
-            onPress={onFallback}
-            style={{
-              borderRadius: 8,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              paddingHorizontal: 10,
-              paddingVertical: 6,
-            }}
-          >
-            <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>改用对话流</Text>
-          </Pressable>
+          {status === "error" ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="重新加载内嵌视图"
+              onPress={reload}
+              style={{
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+              }}
+            >
+              <Text style={{ color: theme.colors.foreground, fontSize: 12 }}>重新加载</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
       {blocked ? (

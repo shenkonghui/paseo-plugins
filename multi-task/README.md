@@ -31,9 +31,9 @@
 
 ## 4. 面板内容
 
-每个面板针对一个 workspace（内容是其当前活跃 agent 的会话）：
+每个面板针对一个 workspace（内容是其当前活跃 agent 的会话）。有 DOM（浏览器 / Electron）时面板内容就是**内嵌原生会话**（见第 5 节）；本节描述的自绘对话流只作为**没有 DOM** 的原生客户端自动退化路径。
 
-- 头部：**workspace 名**（主标题）+ 状态胶囊徽标（执行中 / 空闲 / 出错…），副标题为 **agent 名**（没有 agent 时显示「无 agent」）；**「打开」在 app 主界面打开该 workspace**（`navigation.openWorkspace({ workspaceId })`，流 / 内嵌模式都显示，且没有 agent 的 workspace 也能打开）与「移除」（**移除会先弹窗确认**，确认后才从窗口移除，取消则保持原样）。
+- 头部：**workspace 名**（主标题）+ 状态胶囊徽标（执行中 / 空闲 / 出错…），副标题为 **agent 名**（没有 agent 时显示「无 agent」）；**「打开」在 app 主界面打开该 workspace**（`navigation.openWorkspace({ workspaceId })`，内嵌 / 退化视图都显示，且没有 agent 的 workspace 也能打开）与「移除」（**移除会先弹窗确认**，确认后才从窗口移除，取消则保持原样）。
 - 中部：实时对话流，自动滚到底部。数据与原生会话同一份 `projected` 投影，渲染为**结构化条目**：
   - 用户 / assistant / 思考（斜体弱化）文本支持**轻量 markdown 渲染**：标题、代码块（带语言标签 + 「复制」按钮）、有序 / 无序列表（支持缩进嵌套）、引用、`---` 分隔线、`**粗体**`、`*斜体*`、`~~删除线~~`、行内 `code`、可点击链接（不引入额外依赖；`_`/`__` 变体故意不支持，避免误伤 `some_var_name` 之类的标识符）；
   - **思考（thinking）**单独成卡片（描边 + 浅底 + 斜体灰字）：**限高 120px + 内部滚动**、可点击折叠，不会把整条流一直往下推；**连续的思考会合并到同一张卡片**（对齐 daemon 的 `reasoning_merge` 语义）；
@@ -44,21 +44,21 @@
     - shell → 输出 + 退出码；edit → **`+`/`-` 高亮着色**的 diff；read → 行号范围；
     - search → 匹配数 / 文件列表 / 网页结果；fetch → HTTP 状态 / 字节数；plan / 子任务 → 文本。
   - 长正文默认折叠、失败自动展开；过长截断并提示剩余行数。
-- 底部：输入框 + 「发送」→ 直接给该 workspace 当前的 agent 发消息（`paseo.agents.ref(id).send`）；**Enter 发送，Shift+Enter 换行**。
+- 底部（仅自绘退化视图）：输入框 + 「发送」→ 直接给该 workspace 当前的 agent 发消息（`paseo.agents.ref(id).send`）；**Enter 发送，Shift+Enter 换行**。
   - **发送队列**：发送中会显示「发送中…」；此时再发送会**排队**（显示「排队中 · N」），逐个发出。agent 正在跑当前回合时同样计入忙碌——排队消息等它空闲再发（想要「忙时也立刻投递 / steering」，把 `agent-pane.tsx` 里 `busy` 中的 `agentRunning` 去掉即可）。
 
 流式文本增长与工具 running→完成会按条目 identity **就地更新**，不会重复堆叠；连续思考按合并语义累加进同一张卡片（兼容累积式与增量式两种下发）。
 
 另外，外层对话流只在**贴近底部**时自动跟随新内容，往上翻历史时不会被强行拉回底部。
 
-## 5. 内嵌原生会话（web / Electron，可选）
+## 5. 内嵌原生会话（唯一面板视图）
 
-每个面板可在两种视图间切换（头部按钮「内嵌 / 流」）；**两种视图下头部都有「打开」**，用于在 app 主界面打开该 workspace：
+面板**只保留内嵌这一种视图**，不再提供「流 / 内嵌」切换；头部始终有「打开」，用于在 app 主界面打开该 workspace：
 
-- **内嵌**：用 `<iframe>` 加载 `/h/<serverId>/agent/<agentId>`（`buildAgentDeepLinkRoute`，agentId = 该 workspace 当前活跃 agent），即**真正的原生会话**，自带的输入框/权限弹窗/文件 diff 全都在。
-- **流**：上面 4 节的自绘对话流（原生平台与加载失败时的回退）。
+- 用 `<iframe>` 加载 `/h/<serverId>/agent/<agentId>`（`buildAgentDeepLinkRoute`，agentId = 该 workspace 当前活跃 agent），即**真正的原生会话**，自带的输入框/权限弹窗/文件 diff 全都在。
+- 自绘对话流不再是可选项：只作为**没有 DOM** 的原生客户端（iOS / Android）自动退化路径，见第 4 节。
 
-**workspace 里没有 agent 时**：内嵌模式会打开该 workspace 的「新建 agent」页（`/h/<serverId>/workspace/<workspaceId>?open=draft:new`，app 会把它换成一张新草稿标签），可以直接在里面创建 agent；创建后刷新（或下次重进）即切到该 agent 的会话。原生平台没有 DOM，仍显示「该 workspace 暂无 agent。」。
+**workspace 里没有 agent 时**：会打开该 workspace 的「新建 agent」页（`/h/<serverId>/workspace/<workspaceId>?open=draft:new`，app 会把它换成一张新草稿标签），可以直接在里面创建 agent；创建后刷新（或下次重进）即切到该 agent 的会话。原生平台没有 DOM，仍显示「该 workspace 暂无 agent。」。
 
 **侧栏处理**：内嵌的是完整 app 实例，自带左侧 workspace 栏与右侧 Explorer。插件**只藏左侧栏、保留右侧 Explorer**——app 没有提供隐藏它们的 URL 参数，所以在同源 iframe 里注入一段 CSS：`:has(> [data-testid="left-sidebar-resize-handle"]){display:none!important}`。
 这段注入是**尽力而为**的：依赖 app 的 DOM 结构与 `:has()`（Chromium 105+ / Electron 满足），app 改版可能失效；跨源时拿不到 `contentDocument`，不会注入。想连右侧也藏起来，在 `client/embedded-agent.tsx` 的 `HIDE_LEFT_SIDEBAR_CSS` 里补一条 `[data-testid="workspace-explorer-sidebar"]{display:none!important}` 即可。
@@ -77,7 +77,7 @@
 
 - 只要运行环境**有 DOM**（浏览器 / Electron 桌面 App）就启用；iOS / Android 原生没有 DOM，自动回退自绘。
 - iframe 用**相对路由** `/h/<serverId>/agent/<agentId>`（`buildAgentDeepLinkRoute`），基于当前文档解析，天然同源，共享鉴权与本地存储，无需硬编码 host / origin。
-- 默认值：有 DOM 时新增面板默认「内嵌」，否则「流」。想改默认，编辑 `client/multi-task.tsx` 里 `addView` 的 `mode`。
+- **只有内嵌**：有 DOM 就内嵌，没有「流」可切；加载失败时面板里提供「重新加载」（重挂 iframe），不会切到自绘。
 
 ## 6. 工具栏尺寸 / 收起
 
@@ -93,12 +93,12 @@
 ## 7. 持久化
 
 面板列表存放在**宿主侧 settings**（`defineSettings`，scope `host`），所有客户端共享、刷新或重启 daemon 不丢。
-存 `{ views, toolbarSize }`；workspace 名、当前 agent、状态每次从实时列表解析。settings 版本从 1 迁到 2（v1 按 agent 存，迁移时按 `workspaceId` 去重），v3 新增 `toolbarSize`（旧数据自动补 `compact`）。
+存 `{ views, toolbarSize }`；workspace 名、当前 agent、状态每次从实时列表解析。settings 版本从 1 迁到 2（v1 按 agent 存，迁移时按 `workspaceId` 去重），v3 新增 `toolbarSize`（旧数据自动补 `compact`），v4 去掉每个面板的 `mode`（只保留内嵌视图，旧数据里的 `mode` 解析时自动剥离）。
 
 ## 已知限制
 
-- 插件 SDK **没有**「嵌入原生会话组件」的 API（`addTimelineRenderer` 是往原生会话里加自定义条目，不是把会话搬进面板）。内嵌模式是绕过 SDK、用 DOM `<iframe>` 直接加载 app 深链实现的，只在 web / Electron 可用且开销较大。
-- 自绘模式是插件的实时对话流（`timeline.refetch` + `subscribe`），内容与原生同源（同一份 `projected` 投影），但不是原生聊天组件。
+- 插件 SDK **没有**「嵌入原生会话组件」的 API（`addTimelineRenderer` 是往原生会话里加自定义条目，不是把会话搬进面板）。内嵌视图是绕过 SDK、用 DOM `<iframe>` 直接加载 app 深链实现的，只在 web / Electron 可用且开销较大。
+- 没有 DOM 时退化为插件的实时对话流（`timeline.refetch` + `subscribe`），内容与原生同源（同一份 `projected` 投影），但不是原生聊天组件。
 - workspace 与 agent 列表各取前 200 条（`workspaces.list` / `agents.list` 分页上限）；正常使用足够。
 
 ## 验证
