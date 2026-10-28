@@ -297,10 +297,15 @@ export function EmbeddedAgent({
   src,
   theme,
   onActivate,
+  width,
+  height,
 }: {
   src: string;
   theme: Theme;
   onActivate: () => void;
+  /** iframe 的固定尺寸：窗口拖动时由上层冻结，避免每帧重排内嵌 app。 */
+  width?: number;
+  height?: number;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   // 加载失败时重新挂载 iframe：换 key 会重走一次加载，不做视图切换。
@@ -351,7 +356,12 @@ export function EmbeddedAgent({
         title="原生会话"
         onLoad={handleLoad}
         onError={handleError}
-        style={{ width: "100%", height: "100%", border: 0, display: "block" }}
+        style={{
+          width: width ?? "100%",
+          height: height ?? "100%",
+          border: 0,
+          display: "block",
+        }}
       />
       {status !== "ready" ? (
         <View

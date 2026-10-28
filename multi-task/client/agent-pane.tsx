@@ -383,6 +383,15 @@ export function AgentPane({
   );
 
   const workspaceTitle = info?.workspaceLabel ?? view.workspaceId;
+  // 内嵌 iframe 的尺寸冻结：拖动窗口时每个面板都是一整套 Paseo app，
+  // 逐帧改 iframe 尺寸会让它们反复重排（卡死 + 容易拖白）；
+  // 外框（本组件 width/height）实时跟随，iframe 等尺寸稳定 180ms 后再更新一次。
+  const [contentSize, setContentSize] = useState({ width, height });
+  useEffect(() => {
+    if (contentSize.width === width && contentSize.height === height) return;
+    const timer = setTimeout(() => setContentSize({ width, height }), 180);
+    return () => clearTimeout(timer);
+  }, [width, height, contentSize.width, contentSize.height]);
   // 主标题用 workspace 名做分组，agent 名放副标题，状态由右侧胶囊展示。
   const secondaryTitle = agentId == null ? "无 agent" : (info?.agentTitle ?? agentId);
   const effectiveStatus = status ?? info?.agentStatus ?? null;
@@ -475,7 +484,13 @@ export function AgentPane({
       </View>
 
       {embedded && embedSrc ? (
-        <EmbeddedAgent src={embedSrc} theme={theme} onActivate={onActivate} />
+        <EmbeddedAgent
+          src={embedSrc}
+          theme={theme}
+          onActivate={onActivate}
+          width={contentSize.width}
+          height={contentSize.height}
+        />
       ) : agentId == null ? (
         <View style={styles.empty}>
           <Text style={styles.emptyText}>该 workspace 暂无 agent。</Text>
