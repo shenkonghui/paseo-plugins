@@ -77,6 +77,14 @@
 - 用 `<iframe>` 加载 `/h/<serverId>/agent/<agentId>`（`buildAgentDeepLinkRoute`，agentId = 该 workspace 当前活跃 agent），即**真正的原生会话**，自带的输入框/权限弹窗/文件 diff 全都在。
 - 自绘对话流不再是可选项：只作为**没有 DOM** 的原生客户端（iOS / Android）自动退化路径，见第 4 节。
 
+**iframe 常驻（切界面不重连）**：切走「多任务」界面时插件 screen 会被宿主卸载，但内嵌的是一整套 Paseo 实例（重建 = 重连 websocket + 重拉历史，很慢）。所以 iframe **不跟着 React 树销毁**（`client/frame-pool.ts`）：
+
+- 面板里放一个透明占位元素（slot），挂载时用 Chromium 133+ 的 `moveBefore()` 把 iframe **搬进** slot；卸载时（`useLayoutEffect` cleanup，在 React 删 DOM 之前）再**搬回** `document.body` 下的隐藏暂存容器（holder）。
+- `moveBefore()` 是 state-preserving 搬运：iframe 文档、websocket、滚动位置全部保留，再次进入界面直接复用，**不会重连、不会重拉历史**；浏览器不支持时回退 `appendChild()`（会重载，等于旧行为，功能不受影响）。
+- 池子按 `src` 复用，空闲实例最多留 6 个（超过按最久未用销毁，免得吃内存）；插件卸载（disable / reload）时全部销毁。
+- 任何时候都能用面板里的「重新加载」强制丢弃旧实例重建（`fresh`）。
+- iframe 已被搬进面板内部，所以滚动 / 裁切 / 层级都跟原生一致；面板的加载中 / 失败提示层只补了 `zIndex: 5` 保证压在上面。
+
 **workspace 里没有 agent 时**：会打开该 workspace 的「新建 agent」页（`/h/<serverId>/workspace/<workspaceId>?open=draft:new`，app 会把它换成一张新草稿标签），可以直接在里面创建 agent；创建后刷新（或下次重进）即切到该 agent 的会话。原生平台没有 DOM，仍显示「该 workspace 暂无 agent。」。
 
 **侧栏处理**：内嵌的是完整 app 实例，自带左侧 workspace 栏与右侧 Explorer。插件**只藏左侧栏、保留右侧 Explorer**——app 没有提供隐藏它们的 URL 参数，所以在同源 iframe 里注入一段 CSS：`:has(> [data-testid="left-sidebar-resize-handle"]){display:none!important}`。

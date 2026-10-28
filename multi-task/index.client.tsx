@@ -1,5 +1,6 @@
 import type { PluginClientContext, PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
+import { disposeAllFrames } from "./client/frame-pool";
 import { MultiTaskScreen } from "./client/multi-task";
 import { MultiTaskSettings } from "./client/multi-task-settings";
 import { registerGlobalShortcut } from "./client/shortcut";
@@ -61,5 +62,7 @@ export default function contribute(client: PluginClientContext) {
 
   return () => {
     unregisterShortcut();
+    // 插件卸载（disable / reload）时销毁常驻的内嵌 iframe。
+    disposeAllFrames();
   };
 }

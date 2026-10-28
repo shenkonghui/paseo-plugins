@@ -1,6 +1,7 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
+import { leaseFrame, type DomElementLike, type FrameLease } from "./frame-pool";
 import { dispatchShortcut } from "./shortcut";
 
 type Theme = PluginScreenProps["theme"];
@@ -303,12 +304,12 @@ export function EmbeddedAgent({
   src: string;
   theme: Theme;
   onActivate: () => void;
-  /** iframe 的固定尺寸：窗口拖动时由上层冻结，避免每帧重排内嵌 app。 */
+  /** 冻结后的内容尺寸：窗口缩放时先不变，等尺寸稳定后再更新（避免内嵌 app 逐帧重排）。 */
   width?: number;
   height?: number;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  // 加载失败时重新挂载 iframe：换 key 会重走一次加载，不做视图切换。
+  // 「重新加载」：销毁这个 iframe 再建一个（正常情况下卸载只是隐藏，不重建）。
   const [reloadNonce, setReloadNonce] = useState(0);
   const reload = useCallback(() => {
     setStatus("loading");
@@ -316,6 +317,8 @@ export function EmbeddedAgent({
   }, []);
   // 跨源时拿不到 contentDocument，所有 iframe 内的操作都会静默失效——显式提示出来。
   const [blocked, setBlocked] = useState(false);
+  const slotRef = useRef<View>(null);
+  const leaseRef = useRef<FrameLease | null>(null);
   const frameCleanup = useRef<(() => void) | null>(null);
   // 用 ref 拿最新的 onActivate，避免 iframe 监听器捕获旧闭包。
   const activateRef = useRef(onActivate);
@@ -323,46 +326,59 @@ export function EmbeddedAgent({
     activateRef.current = onActivate;
   }, [onActivate]);
 
-  useEffect(
-    () => () => {
+  // 挂载时借用（或新建）一个常驻 iframe；卸载时只把它搬回暂存容器——iframe 留在池里，
+  // 再次进入界面直接复用，不会再重连、不会重新拉历史。
+  // 必须用 layout effect：卸载时要在 React 把面板 DOM 删掉之前把 iframe 搬走。
+  useLayoutEffect(() => {
+    const slot = slotRef.current as unknown as DomElementLike | null;
+    if (!slot || typeof slot.appendChild !== "function") return;
+    const lease = leaseFrame({
+      src,
+      slot,
+      content: width != null && height != null ? { width, height } : null,
+      fresh: reloadNonce > 0,
+    });
+    if (!lease) return;
+    leaseRef.current = lease;
+
+    const attach = () => {
+      setStatus("ready");
+      const frame = lease.frame as { contentWindow?: unknown };
+      const doc = (frame.contentWindow as { document?: unknown } | null)?.document as {
+        querySelector?: unknown;
+      } | null;
+      setBlocked(!doc || typeof doc.querySelector !== "function");
+      frameCleanup.current?.();
+      frameCleanup.current = combineCleanups(
+        installSidebarHiding(frame.contentWindow),
+        installFrameKeys(frame.contentWindow),
+        installEmbeddedEnterSubmit(frame.contentWindow),
+        watchFrameActivation(frame.contentWindow, () => activateRef.current()),
+      );
+    };
+    // 复用的 iframe 已经加载过了，onLoad 会同步立刻回调一次。
+    lease.onLoad(attach);
+    const handleError = () => setStatus("error");
+    lease.frame.addEventListener("error", handleError);
+
+    return () => {
+      lease.frame.removeEventListener("error", handleError);
       frameCleanup.current?.();
       frameCleanup.current = null;
-    },
-    [],
-  );
+      leaseRef.current = null;
+      lease.release();
+    };
+  }, [src, reloadNonce]);
 
-  const handleLoad = useCallback((event: { currentTarget: unknown }) => {
-    setStatus("ready");
-    const frame = event.currentTarget as { contentWindow?: unknown };
-    const doc = (frame.contentWindow as { document?: unknown } | null)?.document as {
-      querySelector?: unknown;
-    } | null;
-    setBlocked(!doc || typeof doc.querySelector !== "function");
-    frameCleanup.current?.();
-    frameCleanup.current = combineCleanups(
-      installSidebarHiding(frame.contentWindow),
-      installFrameKeys(frame.contentWindow),
-      installEmbeddedEnterSubmit(frame.contentWindow),
-      watchFrameActivation(frame.contentWindow, () => activateRef.current()),
-    );
-  }, []);
-  const handleError = useCallback(() => setStatus("error"), []);
+  // 冻结后的尺寸变化时同步给池（只有稳定后的值才会变）。
+  useLayoutEffect(() => {
+    leaseRef.current?.setContentSize(width != null && height != null ? { width, height } : null);
+  }, [width, height]);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-      <iframe
-        key={reloadNonce}
-        src={src}
-        title="原生会话"
-        onLoad={handleLoad}
-        onError={handleError}
-        style={{
-          width: width ?? "100%",
-          height: height ?? "100%",
-          border: 0,
-          display: "block",
-        }}
-      />
+      {/* 占位：真正的 iframe 由 frame-pool 搬进这个元素（切界面时再搬走暂存） */}
+      <View ref={slotRef} style={{ flex: 1, overflow: "hidden" }} />
       {status !== "ready" ? (
         <View
           style={{
@@ -376,6 +392,8 @@ export function EmbeddedAgent({
             gap: 10,
             padding: 16,
             backgroundColor: theme.colors.surface0,
+            // 压在被搬进来的 iframe 上面。
+            zIndex: 5,
           }}
         >
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, textAlign: "center" }}>
@@ -409,6 +427,7 @@ export function EmbeddedAgent({
             paddingHorizontal: 8,
             paddingVertical: 4,
             backgroundColor: theme.colors.surface2,
+            zIndex: 5,
           }}
         >
           <Text style={{ color: theme.colors.statusWarning, fontSize: 10, textAlign: "center" }}>
