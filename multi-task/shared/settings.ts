@@ -10,6 +10,10 @@ export const multiTaskViewSchema = z.object({
   workspaceId: z.string().min(1),
   /** 折叠到窗口底部的「最小化条」。 */
   collapsed: z.boolean().default(false),
+  /** 手动拖拽调整后的宽度权重（同一行内归一化）；缺省 = 均分。 */
+  widthWeight: z.number().positive().optional(),
+  /** 手动拖拽调整后的行高权重（同一行共用）；缺省 = 均分。 */
+  heightWeight: z.number().positive().optional(),
 });
 
 export type MultiTaskView = z.output<typeof multiTaskViewSchema>;
@@ -21,7 +25,7 @@ export type MultiTaskToolbarSize = z.output<typeof multiTaskToolbarSizeSchema>;
 export const multiTaskSettings = defineSettings({
   id: "views",
   scope: "host",
-  version: 4,
+  version: 5,
   schema: z.object({
     views: z.array(multiTaskViewSchema).default([]),
     /** 工具栏尺寸：compact 更矮（默认），comfortable 保留较大的间距。 */
@@ -30,6 +34,7 @@ export const multiTaskSettings = defineSettings({
   // v1 是按 agent 存的（{id, agentId, workspaceId, mode}），v2 改为按 workspace；按 workspaceId 去重。
   // v2→v3 只新增 toolbarSize，校验时由 schema 默认值补齐。
   // v3→v4 去掉每个面板的 mode：面板只保留内嵌原生视图，旧数据里的 mode 由 schema 解析时自动剥离。
+  // v4→v5 新增可选的 widthWeight / heightWeight：手动拖拽调节面板大小后持久化，缺省等价于均分。
   migrate(values, fromVersion) {
     if (fromVersion >= 2) return values;
     const raw = values as { views?: unknown } | null;

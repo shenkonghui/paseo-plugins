@@ -3,8 +3,8 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { usePaseo, useSettings } from "@getpaseo/plugin/client";
 import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
 import { buildAgentDeepLinkRoute } from "@getpaseo/protocol/agent-deep-link";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import {
   makeViewId,
   multiTaskSettings,
@@ -13,6 +13,7 @@ import {
 } from "../shared/settings";
 import { AgentPane, statusColor, type AgentPaneInfo } from "./agent-pane";
 import { WorkspacePicker, workspaceLabel } from "./agent-picker";
+import { ResizeHandle } from "./resize-handle";
 
 type Theme = PluginScreenProps["theme"];
 type Paseo = ReturnType<typeof usePaseo>;
@@ -125,6 +126,14 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
       panesWrap: { flex: 1 },
       panesScroll: { flex: 1 },
       row: { flexDirection: "row" as const, justifyContent: "flex-start" as const },
+      resizeShield: {
+        position: "absolute" as const,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 20,
+      },
       hiddenList: { gap: 6, paddingBottom: 8 },
       hiddenRow: {
         flexDirection: "row" as const,
@@ -200,6 +209,61 @@ function computeTileGrid(
   const cellHeight = Math.max(naturalCellHeight, minCellHeight);
   return { cols, rows, cellHeight };
 }
+
+interface PaneRow {
+  views: MultiTaskView[];
+  /** 该行每个面板的像素宽度（同一行内按 widthWeight 归一化）。 */
+  widths: number[];
+  /** 该行高度（所有行按 heightWeight 归一化）。 */
+  height: number;
+}
+
+/** 按权重把总长度分给每一项；权重缺失 / 非法时退化为等分。 */
+function distribute(weights: number[], total: number): number[] {
+  const safe = weights.map((weight) =>
+    Number.isFinite(weight) && weight > 0 ? weight : 1,
+  );
+  const sum = safe.reduce((acc, weight) => acc + weight, 0) || safe.length;
+  return safe.map((weight) => Math.max(1, (total * weight) / sum));
+}
+
+/**
+ * 在列数固定的前提下按权重计算每行宽度与行高：
+ * 默认权重都是 1（等价于原来的均分平铺）；拖拽分隔条后使用持久化下来的权重。
+ */
+function computePaneRows(
+  views: MultiTaskView[],
+  cols: number,
+  width: number,
+  height: number,
+  gap: number,
+  minRowHeight: number,
+): PaneRow[] {
+  if (views.length === 0 || cols <= 0 || width <= 0) return [];
+  const chunks: MultiTaskView[][] = [];
+  for (let index = 0; index < views.length; index += cols) {
+    chunks.push(views.slice(index, index + cols));
+  }
+  const rows = chunks.length;
+  // 高度不够时保底最小行高，整体超出可用高度就由外层 ScrollView 滚动。
+  const availableHeight = Math.max(height - gap * (rows - 1), minRowHeight * rows);
+  const heights = distribute(
+    chunks.map((chunk) => chunk[0]?.heightWeight ?? 1),
+    availableHeight,
+  );
+  return chunks.map((chunk, rowIndex) => ({
+    views: chunk,
+    widths: distribute(
+      chunk.map((view) => view.widthWeight ?? 1),
+      width - gap * (chunk.length - 1),
+    ),
+    height: Math.max(minRowHeight, heights[rowIndex] ?? minRowHeight),
+  }));
+}
+
+type ResizeSession =
+  | { kind: "col"; rowIndex: number; columnIndex: number; startX: number; widths: number[] }
+  | { kind: "row"; rowIndex: number; startY: number; heights: number[] };
 
 /** agent 的最近活跃时间，用来在一个 workspace 里挑「当前」的 agent。 */
 function agentActivityTime(agent: PaseoAgent): number {
@@ -408,6 +472,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   );
 
   const gap = layout.compact ? 10 : 14;
+  const minPaneWidth = layout.compact ? 150 : 190;
+  const minRowHeight = layout.compact ? 200 : 220;
   // 只按展开的面板铺网格——隐藏的不占空间，其余自动变大。
   const grid = useMemo(
     () =>
@@ -422,17 +488,14 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     [expandedViews.length, paneArea.width, paneArea.height, layout.compact, gap],
   );
 
-  // 每行铺满可用宽度：整行放得下时均分，最后一行放不满的面板平分整行宽度。
-  const tileRows = useMemo(() => {
-    if (!grid) return [];
-    const rows: { views: MultiTaskView[]; width: number }[] = [];
-    for (let index = 0; index < expandedViews.length; index += grid.cols) {
-      const rowViews = expandedViews.slice(index, index + grid.cols);
-      const rowWidth = (paneArea.width - gap * (rowViews.length - 1)) / rowViews.length;
-      rows.push({ views: rowViews, width: rowWidth });
-    }
-    return rows;
-  }, [grid, expandedViews, paneArea.width, gap]);
+  // 每行铺满可用宽度、按权重分配行高：默认均分，拖拽分隔条后按保存的权重渲染。
+  const layoutRows = useMemo(
+    () =>
+      grid
+        ? computePaneRows(expandedViews, grid.cols, paneArea.width, paneArea.height, gap, minRowHeight)
+        : [],
+    [grid, expandedViews, paneArea.width, paneArea.height, gap, minRowHeight],
+  );
 
   const setViewCollapsed = useCallback(
     (viewId: string, collapsed: boolean) => {
@@ -442,6 +505,168 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     },
     [views, persist],
   );
+
+  const [resizePreview, setResizePreview] = useState<ResizeSession | null>(null);
+  // 遮罩只覆盖「正在拖拽」的时段；预览会多保留一会儿，等持久化后的权重生效。
+  const [resizing, setResizing] = useState(false);
+  const resizeRef = useRef<ResizeSession | null>(null);
+
+  // 拖拽行内分隔条：只改相邻两个面板的宽度，两者总宽不变。
+  const startColumnResize = useCallback(
+    (rowIndex: number, columnIndex: number, x: number) => {
+      const row = layoutRows[rowIndex];
+      if (!row) return;
+      const session: ResizeSession = {
+        kind: "col",
+        rowIndex,
+        columnIndex,
+        startX: x,
+        widths: row.widths.slice(),
+      };
+      resizeRef.current = session;
+      setResizePreview(session);
+      setResizing(true);
+    },
+    [layoutRows],
+  );
+
+  // 拖拽行间分隔条：只改相邻两行的高度，两者总高不变。
+  const startRowResize = useCallback(
+    (rowIndex: number, y: number) => {
+      if (layoutRows.length <= 1) return;
+      const session: ResizeSession = {
+        kind: "row",
+        rowIndex,
+        startY: y,
+        heights: layoutRows.map((row) => row.height),
+      };
+      resizeRef.current = session;
+      setResizePreview(session);
+      setResizing(true);
+    },
+    [layoutRows],
+  );
+
+  const moveResize = useCallback(
+    (x: number, y: number) => {
+      const session = resizeRef.current;
+      if (!session) return;
+      if (session.kind === "col") {
+        const widths = session.widths.slice();
+        const index = session.columnIndex;
+        const before = widths[index - 1] ?? 0;
+        const total = before + (widths[index] ?? 0);
+        const min = Math.min(minPaneWidth, total / 2);
+        const next = Math.min(total - min, Math.max(min, before + (x - session.startX)));
+        widths[index - 1] = next;
+        widths[index] = total - next;
+        const preview: ResizeSession = { ...session, widths };
+        resizeRef.current = preview;
+        setResizePreview(preview);
+        return;
+      }
+      const heights = session.heights.slice();
+      const index = session.rowIndex;
+      const before = heights[index - 1] ?? 0;
+      const total = before + (heights[index] ?? 0);
+      const min = Math.min(minRowHeight, total / 2);
+      const next = Math.min(total - min, Math.max(min, before + (y - session.startY)));
+      heights[index - 1] = next;
+      heights[index] = total - next;
+      const preview: ResizeSession = { ...session, heights };
+      resizeRef.current = preview;
+      setResizePreview(preview);
+    },
+    [minPaneWidth, minRowHeight],
+  );
+
+  const endResize = useCallback(() => {
+    const session = resizeRef.current;
+    resizeRef.current = null;
+    setResizing(false);
+    if (!session) return;
+    // 兜底：写失败 / 长时间没回时，把预览清掉，回到实际生效的布局。
+    globalThis.setTimeout(() => {
+      setResizePreview((current) => (current === session ? null : current));
+    }, 1200);
+    if (session.kind === "col") {
+      const row = layoutRows[session.rowIndex];
+      if (!row) return;
+      // 只是点了一下分隔条、没真的拖动：不写设置，避免把均分布局误标成「手动调整」。
+      const moved = row.widths.some(
+        (width, index) => Math.abs(width - (session.widths[index] ?? width)) >= 0.5,
+      );
+      if (!moved) return;
+      const weights = new Map(row.views.map((view, index) => [view.id, session.widths[index] ?? 1]));
+      void persist(
+        views.map((view) => {
+          const weight = weights.get(view.id);
+          return weight == null ? view : { ...view, widthWeight: Math.max(1, weight) };
+        }),
+      );
+      return;
+    }
+    // 行高权重是跨行归一化的：一次拖拽后把所有行都写成当前像素高度，保持单位一致。
+    const moved = layoutRows.some(
+      (row, index) => Math.abs(row.height - (session.heights[index] ?? row.height)) >= 0.5,
+    );
+    if (!moved) return;
+    const rowIndexById = new Map<string, number>();
+    layoutRows.forEach((row, index) => row.views.forEach((view) => rowIndexById.set(view.id, index)));
+    void persist(
+      views.map((view) => {
+        const index = rowIndexById.get(view.id);
+        if (index == null) return view;
+        return { ...view, heightWeight: Math.max(1, session.heights[index] ?? 1) };
+      }),
+    );
+  }, [layoutRows, persist, views]);
+
+  // 拖拽过程中用预览尺寸渲染；松手后由持久化的权重接管。
+  const displayRows = useMemo(() => {
+    if (!resizePreview) return layoutRows;
+    if (resizePreview.kind === "col") {
+      return layoutRows.map((row, index) =>
+        index === resizePreview.rowIndex ? { ...row, widths: resizePreview.widths } : row,
+      );
+    }
+    return layoutRows.map((row, index) => ({
+      ...row,
+      height: resizePreview.heights[index] ?? row.height,
+    }));
+  }, [layoutRows, resizePreview]);
+
+  const hasManualLayout = useMemo(
+    () => views.some((view) => view.widthWeight != null || view.heightWeight != null),
+    [views],
+  );
+
+  // 预览保留到持久化后的权重渲染到位（避免松手瞬间闪回旧尺寸）。
+  useEffect(() => {
+    if (!resizePreview || resizing) return;
+    if (resizePreview.kind === "col") {
+      const row = layoutRows[resizePreview.rowIndex];
+      if (!row) {
+        setResizePreview(null);
+        return;
+      }
+      const same = row.widths.every(
+        (width, index) => Math.abs(width - (resizePreview.widths[index] ?? width)) < 1,
+      );
+      if (same) setResizePreview(null);
+      return;
+    }
+    const same = layoutRows.every(
+      (row, index) => Math.abs(row.height - (resizePreview.heights[index] ?? row.height)) < 1,
+    );
+    if (same) setResizePreview(null);
+  }, [layoutRows, resizePreview, resizing]);
+
+  const resetLayout = useCallback(() => {
+    void persist(
+      views.map((view) => ({ ...view, widthWeight: undefined, heightWeight: undefined })),
+    );
+  }, [views, persist]);
 
   // 拖动结束后按位移换算目标格（只数展开的面板），再映射回完整顺序持久化。
   const handleDrop = useCallback(
@@ -453,14 +678,19 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       const rows = Math.max(1, grid.rows);
       const clamp = (value: number, low: number, high: number) =>
         Math.min(high, Math.max(low, value));
+      const originRowIndex = Math.floor(originExpanded / cols);
+      const originRow = layoutRows[originRowIndex];
+      const rowWidth = originRow
+        ? originRow.widths.reduce((total, width) => total + width, 0) +
+          gap * (originRow.widths.length - 1)
+        : paneArea.width;
       const nextCol = clamp(
-        (originExpanded % cols) +
-          Math.round(dx / Math.max(1, tileRows[Math.floor(originExpanded / cols)]?.width ?? 1)),
+        (originExpanded % cols) + Math.round(dx / Math.max(1, rowWidth)),
         0,
         cols - 1,
       );
       const nextRow = clamp(
-        Math.floor(originExpanded / cols) + Math.round(dy / Math.max(1, grid.cellHeight)),
+        originRowIndex + Math.round(dy / Math.max(1, originRow?.height ?? minRowHeight)),
         0,
         rows - 1,
       );
@@ -477,7 +707,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       next.splice(target, 0, moved);
       void persist(next);
     },
-    [grid, expandedViews, views, persist, tileRows],
+    [grid, expandedViews, views, persist, layoutRows, gap, paneArea.width, minRowHeight],
   );
 
   const retry = useCallback(() => setNonce((value) => value + 1), []);
@@ -516,6 +746,16 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
           <Text style={styles.toolbarTitle}>多任务</Text>
           <Text style={styles.toolbarMeta}>{views.length > 0 ? `${views.length} 个 workspace` : ""}</Text>
           <View style={styles.spacer} />
+          {hasManualLayout ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="重置面板布局"
+              onPress={resetLayout}
+              style={styles.ghostButton}
+            >
+              <Text style={styles.ghostButtonText}>重置布局</Text>
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="刷新 workspace 信息"
@@ -630,27 +870,52 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
             }
           >
             {grid ? (
-              <ScrollView style={styles.panesScroll} contentContainerStyle={{ gap }}>
-                {tileRows.map((row, rowIndex) => (
-                  <View key={rowIndex} style={[styles.row, { gap }]}>
-                    {row.views.map((view) => (
-                      <AgentPane
-                        key={view.id}
-                        view={view}
-                        info={resolveInfo(view)}
-                        agentId={agentIdFor(view)}
-                        width={row.width}
-                        height={grid.cellHeight}
-                        embedSrc={embedSrcFor(view)}
-                        active={view.id === activeViewId}
-                        theme={theme}
-                        navigation={navigation}
-                        onActivate={() => setActiveViewId(view.id)}
-                        onToggleCollapse={() => setViewCollapsed(view.id, !view.collapsed)}
-                        onDrop={(dx, dy) => handleDrop(view.id, dx, dy)}
-                        onRemove={requestRemove}
+              <ScrollView style={styles.panesScroll}>
+                {displayRows.map((row, rowIndex) => (
+                  <View key={row.views[0]?.id ?? rowIndex}>
+                    {rowIndex > 0 ? (
+                      <ResizeHandle
+                        orientation="horizontal"
+                        size={gap}
+                        color={theme.colors.border}
+                        hoverColor={theme.colors.accent}
+                        onStart={({ y }) => startRowResize(rowIndex, y)}
+                        onMove={(position) => moveResize(position.x, position.y)}
+                        onEnd={endResize}
                       />
-                    ))}
+                    ) : null}
+                    <View style={[styles.row, { height: row.height }]}>
+                      {row.views.map((view, columnIndex) => (
+                        <Fragment key={view.id}>
+                          {columnIndex > 0 ? (
+                            <ResizeHandle
+                              orientation="vertical"
+                              size={gap}
+                              color={theme.colors.border}
+                              hoverColor={theme.colors.accent}
+                              onStart={({ x }) => startColumnResize(rowIndex, columnIndex, x)}
+                              onMove={(position) => moveResize(position.x, position.y)}
+                              onEnd={endResize}
+                            />
+                          ) : null}
+                          <AgentPane
+                            view={view}
+                            info={resolveInfo(view)}
+                            agentId={agentIdFor(view)}
+                            width={row.widths[columnIndex] ?? 0}
+                            height={row.height}
+                            embedSrc={embedSrcFor(view)}
+                            active={view.id === activeViewId}
+                            theme={theme}
+                            navigation={navigation}
+                            onActivate={() => setActiveViewId(view.id)}
+                            onToggleCollapse={() => setViewCollapsed(view.id, !view.collapsed)}
+                            onDrop={(dx, dy) => handleDrop(view.id, dx, dy)}
+                            onRemove={requestRemove}
+                          />
+                        </Fragment>
+                      ))}
+                    </View>
                   </View>
                 ))}
               </ScrollView>
@@ -662,6 +927,17 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
           </View>
         </View>
       )}
+
+      {resizing && resizePreview ? (
+        <View
+          style={[
+            styles.resizeShield,
+            {
+              cursor: resizePreview.kind === "col" ? "col-resize" : "row-resize",
+            } as unknown as ViewStyle,
+          ]}
+        />
+      ) : null}
 
       <RemoveConfirm
         open={pendingRemovalId != null}
