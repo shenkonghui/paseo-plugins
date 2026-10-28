@@ -96,6 +96,11 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
         paddingVertical: comfortable ? 6 : 4,
       },
       ghostButtonText: { color: theme.colors.foreground, fontSize: comfortable ? 13 : 12 },
+      // 下拉列表打开时的按钮高亮。
+      ghostButtonActive: {
+        borderColor: theme.colors.accent,
+        backgroundColor: theme.colors.surface2,
+      },
       toolbarToggle: {
         borderRadius: 8,
         borderWidth: 1,
@@ -148,7 +153,48 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
         height: 2,
         backgroundColor: theme.colors.accent,
       },
-      hiddenList: { gap: 6, paddingBottom: 8 },
+      // 「已隐藏」下拉浮层：点外面任何地方关掉，列表自己滚动。
+      menuBackdrop: {
+        position: "absolute" as const,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 25,
+      },
+      hiddenMenu: {
+        position: "absolute" as const,
+        right: compact ? 12 : 20,
+        zIndex: 26,
+        minWidth: 280,
+        maxWidth: 420,
+        maxHeight: 360,
+        gap: 4,
+        paddingVertical: 8,
+        paddingHorizontal: 8,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface1,
+        shadowColor: "#000000",
+        shadowOpacity: 0.28,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
+      },
+      hiddenMenuTitle: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 11,
+        paddingHorizontal: 4,
+        paddingBottom: 2,
+      },
+      hiddenMenuHint: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 11,
+        paddingHorizontal: 4,
+        paddingTop: 4,
+      },
+      hiddenMenuList: { flexGrow: 0, flexShrink: 1 },
+      hiddenMenuListContent: { gap: 4 },
       hiddenRow: {
         flexDirection: "row" as const,
         alignItems: "center" as const,
@@ -156,16 +202,15 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
         borderWidth: 1,
         borderColor: theme.colors.border,
         borderRadius: 8,
-        backgroundColor: theme.colors.surface1,
+        backgroundColor: theme.colors.surface2,
         paddingHorizontal: 10,
         paddingVertical: 6,
       },
       hiddenRowActive: { borderColor: theme.colors.accent },
       hiddenMain: {
         flex: 1,
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 8,
+        // workspace 名一行、agent 名一行；下拉宽度有限时不容易被挤成碎片。
+        gap: 1,
         // react-native-web 里 flex item 默认 min-width:auto，不置 0 标题不会省略。
         minWidth: 0,
       },
@@ -177,7 +222,7 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
         flexShrink: 1,
       },
       hiddenMeta: { color: theme.colors.foregroundMuted, fontSize: 12, flexShrink: 1 },
-      hiddenRemove: { paddingHorizontal: 2, paddingVertical: 2 },
+      hiddenAction: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6 },
       hiddenRemoveText: { color: theme.colors.statusDanger, fontSize: 12 },
       hiddenExpand: { color: theme.colors.accent, fontSize: 12 },
     };
@@ -437,6 +482,9 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
   // 工具栏收起后只留一个小图标，点它再展开（纯界面状态，不持久化）。
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  // 「已隐藏」下拉是否展开，以及工具栏高度（下拉浮层要贴在工具栏下方）。
+  const [hiddenMenuOpen, setHiddenMenuOpen] = useState(false);
+  const [toolbarHeight, setToolbarHeight] = useState(0);
 
   // 能否内嵌只看有没有 DOM（浏览器 / Electron 桌面 App 都有），不依赖布局上报的 platform。
   const canEmbed = useMemo(() => {
@@ -453,9 +501,14 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
 
   const views = settings.status === "ready" ? settings.values.views : [];
 
-  // 隐藏的面板不占格子：展开的铺满主区域，隐藏的在顶部收成整行标题条。
+  // 隐藏的面板不占格子：展开的铺满主区域，隐藏的收进右上角「已隐藏」下拉。
   const expandedViews = useMemo(() => views.filter((view) => !view.collapsed), [views]);
   const collapsedViews = useMemo(() => views.filter((view) => view.collapsed), [views]);
+
+  // 隐藏项被全部恢复 / 移除后，自动收起下拉。
+  useEffect(() => {
+    if (collapsedViews.length === 0) setHiddenMenuOpen(false);
+  }, [collapsedViews.length]);
 
 
   // 每个 workspace 下未归档的 agent，用于把「workspace 面板」解析到当前活跃的 agent。
@@ -597,6 +650,16 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       );
     },
     [views, persist],
+  );
+
+  // 从「已隐藏」下拉里恢复一个面板：回平铺网格并设成当前焦点。
+  const restoreView = useCallback(
+    (viewId: string) => {
+      setActiveViewId(viewId);
+      setViewCollapsed(viewId, false);
+      setHiddenMenuOpen(false);
+    },
+    [setViewCollapsed],
   );
 
   const screenRef = useRef<View>(null);
@@ -843,7 +906,10 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   return (
     <View style={styles.screen} ref={screenRef}>
       {toolbarCollapsed ? (
-        <View style={styles.toolbar}>
+        <View
+          style={styles.toolbar}
+          onLayout={(event) => setToolbarHeight(event.nativeEvent.layout.height)}
+        >
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="展开工具栏"
@@ -854,7 +920,10 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
           </Pressable>
         </View>
       ) : (
-        <View style={styles.toolbar}>
+        <View
+          style={styles.toolbar}
+          onLayout={(event) => setToolbarHeight(event.nativeEvent.layout.height)}
+        >
           <Text style={styles.toolbarTitle}>多任务</Text>
           <Text style={styles.toolbarMeta}>{views.length > 0 ? `${views.length} 个 workspace` : ""}</Text>
           <View style={styles.spacer} />
@@ -884,10 +953,25 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
           >
             <Text style={styles.primaryButtonText}>+ 添加 workspace</Text>
           </Pressable>
+          {collapsedViews.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`已隐藏 ${collapsedViews.length} 个面板，点击可恢复或移除`}
+              onPress={() => setHiddenMenuOpen((open) => !open)}
+              style={[styles.ghostButton, hiddenMenuOpen ? styles.ghostButtonActive : null]}
+            >
+              <Text style={styles.ghostButtonText}>
+                {`已隐藏 ${collapsedViews.length} ${hiddenMenuOpen ? "▴" : "▾"}`}
+              </Text>
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="收起工具栏"
-            onPress={() => setToolbarCollapsed(true)}
+            onPress={() => {
+              setHiddenMenuOpen(false);
+              setToolbarCollapsed(true);
+            }}
             style={styles.toolbarToggle}
           >
             <Text style={styles.toolbarToggleText}>▴</Text>
@@ -912,66 +996,6 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
         </View>
       ) : (
         <View style={styles.panesOuter}>
-          {collapsedViews.length > 0 ? (
-            <View style={styles.hiddenList}>
-              {collapsedViews.map((view) => {
-                const info = resolveInfo(view);
-                const label = info.workspaceLabel ?? view.workspaceId;
-                const expand = () => {
-                  setActiveViewId(view.id);
-                  setViewCollapsed(view.id, false);
-                };
-                return (
-                  <View
-                    key={view.id}
-                    style={[
-                      styles.hiddenRow,
-                      view.id === activeViewId ? styles.hiddenRowActive : null,
-                    ]}
-                  >
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`展开 ${label}`}
-                      onPress={expand}
-                      style={styles.hiddenMain}
-                    >
-                      <View
-                        style={[
-                          styles.hiddenDot,
-                          { backgroundColor: statusColor(info.agentStatus, theme) },
-                        ]}
-                      />
-                      <Text numberOfLines={1} style={styles.hiddenTitle}>
-                        {label}
-                      </Text>
-                      {info.agentTitle ? (
-                        <Text numberOfLines={1} style={styles.hiddenMeta}>
-                          {info.agentTitle}
-                        </Text>
-                      ) : null}
-                    </Pressable>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`移除 ${label}`}
-                      onPress={() => requestRemove(view.id)}
-                      hitSlop={4}
-                      style={styles.hiddenRemove}
-                    >
-                      <Text style={styles.hiddenRemoveText}>移除</Text>
-                    </Pressable>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`展开 ${label}`}
-                      onPress={expand}
-                      hitSlop={4}
-                    >
-                      <Text style={styles.hiddenExpand}>展开</Text>
-                    </Pressable>
-                  </View>
-                );
-              })}
-            </View>
-          ) : null}
           <View
             style={styles.panesWrap}
             onLayout={(event) =>
@@ -1035,12 +1059,80 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
               </ScrollView>
             ) : (
               <View style={styles.centered}>
-                <Text style={styles.muted}>全部面板已隐藏。</Text>
+                <Text style={styles.muted}>
+                  {collapsedViews.length > 0
+                    ? "全部面板已隐藏。点右上角「已隐藏」可恢复或移除。"
+                    : "全部面板已隐藏。"}
+                </Text>
               </View>
             )}
           </View>
         </View>
       )}
+
+      {/* 「已隐藏」下拉：浮在工具栏下方，点外面关掉；每项可以恢复或移除。 */}
+      {hiddenMenuOpen && collapsedViews.length > 0 ? (
+        <>
+          <Pressable
+            accessibilityRole="none"
+            accessibilityLabel="关闭已隐藏列表"
+            onPress={() => setHiddenMenuOpen(false)}
+            style={styles.menuBackdrop}
+          />
+          <View style={[styles.hiddenMenu, { top: toolbarHeight }]}>
+            <Text style={styles.hiddenMenuTitle}>已隐藏的面板</Text>
+            <ScrollView style={styles.hiddenMenuList} contentContainerStyle={styles.hiddenMenuListContent}>
+              {collapsedViews.map((view) => {
+                const info = resolveInfo(view);
+                const label = info.workspaceLabel ?? view.workspaceId;
+                return (
+                  <View
+                    key={view.id}
+                    style={[
+                      styles.hiddenRow,
+                      view.id === activeViewId ? styles.hiddenRowActive : null,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.hiddenDot,
+                        { backgroundColor: statusColor(info.agentStatus, theme) },
+                      ]}
+                    />
+                    <View style={styles.hiddenMain}>
+                      <Text numberOfLines={1} style={styles.hiddenTitle}>
+                        {label}
+                      </Text>
+                      {info.agentTitle ? (
+                        <Text numberOfLines={1} style={styles.hiddenMeta}>
+                          {info.agentTitle}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`恢复 ${label}`}
+                      onPress={() => restoreView(view.id)}
+                      style={styles.hiddenAction}
+                    >
+                      <Text style={styles.hiddenExpand}>恢复</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`移除 ${label}`}
+                      onPress={() => requestRemove(view.id)}
+                      style={styles.hiddenAction}
+                    >
+                      <Text style={styles.hiddenRemoveText}>移除</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </ScrollView>
+            <Text style={styles.hiddenMenuHint}>恢复后回到平铺网格；移除会先弹窗确认。</Text>
+          </View>
+        </>
+      ) : null}
 
       {dragOverlay ? (
         <View
