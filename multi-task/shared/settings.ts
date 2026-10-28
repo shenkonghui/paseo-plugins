@@ -10,9 +10,11 @@ export const multiTaskViewSchema = z.object({
   workspaceId: z.string().min(1),
   /** 折叠到窗口底部的「最小化条」。 */
   collapsed: z.boolean().default(false),
-  /** 手动拖拽调整后的宽度权重（同一行内归一化）；缺省 = 均分。 */
+  /** 手动拖拽调整后的宽度权重（同一行内归一化）；缺省 = 均分。
+   *  注意：清除权重要把这个键**整个删掉**，不能写成 `widthWeight: undefined`——
+   *  设置写入要过 `z.json()` 校验，`undefined` 不是合法 JSON 值，整个 save 会被判不合法。 */
   widthWeight: z.number().positive().optional(),
-  /** 手动拖拽调整后的行高权重（同一行共用）；缺省 = 均分。 */
+  /** 手动拖拽调整后的行高权重（同一行共用）；缺省 = 均分。同理要删键而不是写 undefined。 */
   heightWeight: z.number().positive().optional(),
 });
 

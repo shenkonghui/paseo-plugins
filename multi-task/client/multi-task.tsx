@@ -555,9 +555,14 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       if (settings.status !== "ready") return;
       try {
         const ok = await settings.save({ ...settings.values, views: next }, settings.revision);
-        if (!ok) toast.show("保存失败，请重试", { variant: "error" });
+        if (ok) return;
+        // save 返回 false = revision 过期（其他窗口改过）或数据不合法，SDK 不区分。
+        // 先重读一次，让下一次操作带上最新 revision，用户重试即可成功。
+        toast.show("保存失败：配置可能已被其他窗口改动，请重试", { variant: "error" });
+        await settings.reload();
       } catch (cause) {
         toast.show(cause instanceof Error ? cause.message : String(cause), { variant: "error" });
+        await settings.reload().catch(() => {});
       }
     },
     [settings, toast],
@@ -811,9 +816,15 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     [views],
   );
 
+  // 重置布局：把拖拽出来的 widthWeight / heightWeight 整个键删掉。
+  // 注意不能写成 `widthWeight: undefined`：设置写入要过 z.json() 校验，
+  // undefined 不是合法 JSON 值，整个 save 会被判 invalid（表现为「保存失败」）。
   const resetLayout = useCallback(() => {
     void persist(
-      views.map((view) => ({ ...view, widthWeight: undefined, heightWeight: undefined })),
+      views.map((view) => {
+        const { widthWeight: _widthWeight, heightWeight: _heightWeight, ...rest } = view;
+        return rest;
+      }),
     );
   }, [views, persist]);
 
