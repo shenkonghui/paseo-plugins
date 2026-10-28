@@ -1,7 +1,7 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Animated, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import type { MultiTaskView } from "../shared/settings";
 import { EmbeddedAgent } from "./embedded-agent";
@@ -27,6 +27,8 @@ interface AgentPaneProps {
   height: number;
   /** 内嵌视图的 URL；无 DOM 时为 null。workspace 没有 agent 时指向该 workspace 的「新建 agent」页。 */
   embedSrc: string | null;
+  /** workspace / agent 列表还没到：先显示占位，别急着建 iframe（避免建完又废弃）。 */
+  embedPending?: boolean;
   /** 是否为当前焦点面板（高亮显示）。 */
   active: boolean;
   theme: Theme;
@@ -36,6 +38,8 @@ interface AgentPaneProps {
   onToggleCollapse: () => void;
   /** 拖动头部结束后回调：给出相对起点的位移，由外层换算新的顺序。 */
   onDrop: (dx: number, dy: number) => void;
+  /** 滚动视口容器（panesWrap）：内嵌 iframe 浮层要按它裁切。 */
+  scrollClipRef?: RefObject<View | null>;
   /** 拖动过程中实时上报位移（null 表示结束），外层据此高亮落点格子。 */
   onDragState?: (state: { dx: number; dy: number } | null) => void;
   /** 当前面板是不是拖动的落点（高亮提示松手后会落在这里）。 */
@@ -217,6 +221,7 @@ export function AgentPane({
   width,
   height,
   embedSrc,
+  embedPending,
   active,
   theme,
   navigation,
@@ -225,6 +230,7 @@ export function AgentPane({
   onDrop,
   onDragState,
   dropTarget,
+  scrollClipRef,
   onRemove,
 }: AgentPaneProps) {
   const paseo = usePaseo();
@@ -484,13 +490,11 @@ export function AgentPane({
       </View>
 
       {embedded && embedSrc ? (
-        <EmbeddedAgent
-          src={embedSrc}
-          theme={theme}
-          onActivate={onActivate}
-          width={contentSize.width}
-          height={contentSize.height}
-        />
+        <EmbeddedAgent src={embedSrc} theme={theme} onActivate={onActivate} clipRef={scrollClipRef} />
+      ) : embedPending ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>正在加载会话…</Text>
+        </View>
       ) : agentId == null ? (
         <View style={styles.empty}>
           <Text style={styles.emptyText}>该 workspace 暂无 agent。</Text>

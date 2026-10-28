@@ -12,6 +12,7 @@ import {
   type MultiTaskView,
 } from "../shared/settings";
 import { AgentPane, statusColor, type AgentPaneInfo } from "./agent-pane";
+import { requestFrameSync, setFramesHidden, setKnownSources } from "./frame-pool";
 import { WorkspacePicker, workspaceLabel } from "./agent-picker";
 import { ResizeHandle } from "./resize-handle";
 
@@ -603,11 +604,14 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   const embedSrcFor = useCallback(
     (view: MultiTaskView): string | null => {
       if (!canEmbed) return null;
+      // workspace / agent 列表还没到时先别建 iframe：否则会先按「新建 agent 草稿页」建一个
+      // 完整 app 实例，数据到了再换成会话深链——那批草稿实例白占内存和一条 websocket。
+      if (!data) return null;
       const agentId = agentIdFor(view);
       if (agentId) return buildAgentDeepLinkRoute({ serverId: host.id, agentId });
       return `/h/${encodeURIComponent(host.id)}/workspace/${encodeURIComponent(view.workspaceId)}?open=${encodeURIComponent("draft:new")}`;
     },
-    [canEmbed, host.id, agentIdFor],
+    [canEmbed, data, host.id, agentIdFor],
   );
 
   const resolveInfo = useCallback(
@@ -648,6 +652,25 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     [grid, expandedViews, paneArea.width, paneArea.height, gap, minRowHeight],
   );
 
+  // 通知 iframe 池：只保留这些 src（当前面板列表真正用到的），其余空闲实例当场销毁。
+  const knownFrameSources = useMemo(() => {
+    const sources: string[] = [];
+    for (const view of views) {
+      const src = embedSrcFor(view);
+      if (src) sources.push(src);
+    }
+    return sources;
+  }, [views, embedSrcFor]);
+  useEffect(() => {
+    setKnownSources(knownFrameSources);
+  }, [knownFrameSources]);
+
+  // 「已隐藏」下拉是界面内浮层，打开时先藏起常驻 iframe，免得它盖住菜单。
+  useEffect(() => {
+    setFramesHidden(hiddenMenuOpen);
+  }, [hiddenMenuOpen]);
+  useEffect(() => () => setFramesHidden(false), []);
+
   const setViewCollapsed = useCallback(
     (viewId: string, collapsed: boolean) => {
       void persist(
@@ -668,6 +691,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   );
 
   const screenRef = useRef<View>(null);
+  // 平铺区域的滚动视口：常驻 iframe 浮层要按它裁切。
+  const panesClipRef = useRef<View>(null);
   const ghostRef = useRef<View>(null);
   const resizeRef = useRef<ResizeSession | null>(null);
   // 拖动期间只渲染一条预览线，面板尺寸保持不变；松手后才一次性应用。
@@ -868,6 +893,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   // 拖动中实时高亮落点格：坐标没跨格就不写 state，避免每次 pointermove 都重渲染。
   const handleDragState = useCallback(
     (viewId: string, state: { dx: number; dy: number } | null) => {
+      // 拖动时面板在 translate，尺寸不变（不会触发 ResizeObserver），显式请求同步一次。
+      requestFrameSync();
       if (!state) {
         setDropTargetId(null);
         return;
@@ -1008,6 +1035,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       ) : (
         <View style={styles.panesOuter}>
           <View
+            ref={panesClipRef}
             style={styles.panesWrap}
             onLayout={(event) =>
               setPaneArea({
@@ -1052,8 +1080,10 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
                             width={row.widths[columnIndex] ?? 0}
                             height={row.height}
                             embedSrc={embedSrcFor(view)}
+                            embedPending={canEmbed && data == null}
                             active={view.id === activeViewId}
                             dropTarget={view.id === dropTargetId}
+                            scrollClipRef={panesClipRef}
                             theme={theme}
                             navigation={navigation}
                             onActivate={() => setActiveViewId(view.id)}

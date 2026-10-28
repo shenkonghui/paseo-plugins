@@ -1,5 +1,5 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { Pressable, Text, View } from "react-native";
 import { leaseFrame, type DomElementLike, type FrameLease } from "./frame-pool";
 import { dispatchShortcut } from "./shortcut";
@@ -298,15 +298,13 @@ export function EmbeddedAgent({
   src,
   theme,
   onActivate,
-  width,
-  height,
+  clipRef,
 }: {
   src: string;
   theme: Theme;
   onActivate: () => void;
-  /** 冻结后的内容尺寸：窗口缩放时先不变，等尺寸稳定后再更新（避免内嵌 app 逐帧重排）。 */
-  width?: number;
-  height?: number;
+  /** 滚动视口容器（panesWrap）：常驻 iframe 浮层要按它裁切。 */
+  clipRef?: RefObject<View | null>;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   // 「重新加载」：销毁这个 iframe 再建一个（正常情况下卸载只是隐藏，不重建）。
@@ -332,10 +330,11 @@ export function EmbeddedAgent({
   useLayoutEffect(() => {
     const slot = slotRef.current as unknown as DomElementLike | null;
     if (!slot || typeof slot.appendChild !== "function") return;
+    const clip = (clipRef?.current as unknown as DomElementLike | null) ?? null;
     const lease = leaseFrame({
       src,
       slot,
-      content: width != null && height != null ? { width, height } : null,
+      clip,
       fresh: reloadNonce > 0,
     });
     if (!lease) return;
@@ -368,17 +367,12 @@ export function EmbeddedAgent({
       leaseRef.current = null;
       lease.release();
     };
-  }, [src, reloadNonce]);
-
-  // 冻结后的尺寸变化时同步给池（只有稳定后的值才会变）。
-  useLayoutEffect(() => {
-    leaseRef.current?.setContentSize(width != null && height != null ? { width, height } : null);
-  }, [width, height]);
+  }, [src, reloadNonce, clipRef]);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
       {/* 占位：真正的 iframe 由 frame-pool 搬进这个元素（切界面时再搬走暂存） */}
-      <View ref={slotRef} style={{ flex: 1, overflow: "hidden" }} />
+      <View ref={slotRef} style={{ flex: 1 }} />
       {status !== "ready" ? (
         <View
           style={{

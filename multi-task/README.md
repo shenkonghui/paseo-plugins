@@ -79,11 +79,13 @@
 
 **iframe 常驻（切界面不重连）**：切走「多任务」界面时插件 screen 会被宿主卸载，但内嵌的是一整套 Paseo 实例（重建 = 重连 websocket + 重拉历史，很慢）。所以 iframe **不跟着 React 树销毁**（`client/frame-pool.ts`）：
 
-- 面板里放一个透明占位元素（slot），挂载时用 Chromium 133+ 的 `moveBefore()` 把 iframe **搬进** slot；卸载时（`useLayoutEffect` cleanup，在 React 删 DOM 之前）再**搬回** `document.body` 下的隐藏暂存容器（holder）。
-- `moveBefore()` 是 state-preserving 搬运：iframe 文档、websocket、滚动位置全部保留，再次进入界面直接复用，**不会重连、不会重拉历史**；浏览器不支持时回退 `appendChild()`（会重载，等于旧行为，功能不受影响）。
-- 池子按 `src` 复用，空闲实例最多留 6 个（超过按最久未用销毁，免得吃内存）；插件卸载（disable / reload）时全部销毁。
+- 面板里只放一个透明占位元素（slot）；iframe **创建后永不搬家**，常驻在宿主 `#overlay-root` 里的 `position: fixed` 容器中，按占位元素的 rect 对齐，并按滚动视口 `clip-path` 裁切。
+- 切走界面时容器只是降到几乎全透明（`opacity: 0.001` + `pointer-events: none`），**不用 `display: none`、也不移出视口**——那会让 Chromium 把 iframe 当成 offscreen 冻结、节流掉它的定时器，心跳超时后内嵌 app 会断连（表现就是「正在连接」）。再进来时同一个 iframe 直接显示，文档 / websocket / 滚动位置 / 输入框草稿全在，**不重连、不重拉历史**。
+- 为什么不用 Chromium 的 `moveBefore()` 搬运：卸载时 iframe 已经随面板脱离文档（`invalid hierarchy`），搬运必然失败并回退 `appendChild`（= 重载）。
+- **层级**：宿主的弹窗（「移除面板」确认框、「+ 添加 workspace」选择器）都 portal 到 `#overlay-root`（层号 1，弹窗自身再用 20+），所以 iframe 也挂在同一个容器里、层号 1——弹窗永远盖在 iframe 之上，iframe 仍在 app 内容之上。
+- 池子按 `src` 复用，空闲实例最多留 4 个（超过按最久未用销毁）；当前面板用不到的 src 会立刻销毁实例（每个都是一整套 app，白占内存和一条 websocket）。插件卸载（disable / reload）时全部销毁。
 - 任何时候都能用面板里的「重新加载」强制丢弃旧实例重建（`fresh`）。
-- iframe 已被搬进面板内部，所以滚动 / 裁切 / 层级都跟原生一致；面板的加载中 / 失败提示层只补了 `zIndex: 5` 保证压在上面。
+- 静止时**没有常驻 rAF**：只在滚动 / 窗口缩放 / 面板尺寸变化（`ResizeObserver`）/ 拖动排序时才同步一次几何，否则每帧 `getBoundingClientRect` 会持续强制布局、纯烧 CPU。
 
 **workspace 里没有 agent 时**：会打开该 workspace 的「新建 agent」页（`/h/<serverId>/workspace/<workspaceId>?open=draft:new`，app 会把它换成一张新草稿标签），可以直接在里面创建 agent；创建后刷新（或下次重进）即切到该 agent 的会话。原生平台没有 DOM，仍显示「该 workspace 暂无 agent。」。
 
