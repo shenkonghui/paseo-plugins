@@ -2,7 +2,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Pressable, ScrollView, Text, View } from "react-native";
+import { Animated, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import type { MultiTaskView } from "../shared/settings";
 import { EmbeddedAgent } from "./embedded-agent";
 import { EntryView } from "./entry-view";
@@ -36,6 +36,10 @@ interface AgentPaneProps {
   onToggleCollapse: () => void;
   /** 拖动头部结束后回调：给出相对起点的位移，由外层换算新的顺序。 */
   onDrop: (dx: number, dy: number) => void;
+  /** 拖动过程中实时上报位移（null 表示结束），外层据此高亮落点格子。 */
+  onDragState?: (state: { dx: number; dy: number } | null) => void;
+  /** 当前面板是不是拖动的落点（高亮提示松手后会落在这里）。 */
+  dropTarget?: boolean;
   onRemove: (viewId: string) => void;
 }
 
@@ -81,6 +85,24 @@ function useStyles(theme: Theme) {
       paneInner: { flex: 1 },
       // 拖动中的面板：浮到最上层并略微透明。
       paneDragging: { zIndex: 10, opacity: 0.9 },
+      // 拖动落点：虚线 accent 描边 + 淡底色，松手后面板就落在这格。
+      paneDropTarget: {
+        borderColor: theme.colors.accent,
+        borderStyle: "dashed" as const,
+        borderWidth: 2,
+        backgroundColor: theme.colors.surface2,
+      },
+      // 标题区（⠿ + 标题）：整条都可以按住拖动，右侧按钮除外。
+      dragRegion: {
+        flex: 1,
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 8,
+        minWidth: 0,
+        // react-native 的类型只认 auto / pointer，这里直接用 CSS 光标。
+        cursor: "grab",
+        userSelect: "none" as const,
+      } as unknown as ViewStyle,
       gripWrap: { paddingHorizontal: 3, paddingVertical: 6 },
       grip: { color: theme.colors.foregroundMuted, fontSize: 13 },
       // 当前焦点面板：accent 描边 + 一点辉光。
@@ -201,6 +223,8 @@ export function AgentPane({
   onActivate,
   onToggleCollapse,
   onDrop,
+  onDragState,
+  dropTarget,
   onRemove,
 }: AgentPaneProps) {
   const paseo = usePaseo();
@@ -226,9 +250,11 @@ export function AgentPane({
   const [dragging, setDragging] = useState(false);
   const gripRef = useRef<View>(null);
   const dropRef = useRef(onDrop);
+  const dragStateRef = useRef(onDragState);
   useEffect(() => {
     dropRef.current = onDrop;
-  }, [onDrop]);
+    dragStateRef.current = onDragState;
+  }, [onDrop, onDragState]);
 
   useEffect(() => {
     const grip = gripRef.current as unknown as DomEventTarget | null;
@@ -256,6 +282,8 @@ export function AgentPane({
         setDragging(true);
       }
       dragXY.setValue({ x: dx, y: dy });
+      // 落点高亮：外层按位移换算出目标格，只在格子变化时才重渲染。
+      dragStateRef.current?.({ dx, dy });
     };
     const finish = (event: PointerLike) => {
       if (!active) return;
@@ -263,6 +291,7 @@ export function AgentPane({
       globalTarget.removeEventListener("pointermove", onMove, true);
       globalTarget.removeEventListener("pointerup", finish, true);
       globalTarget.removeEventListener("pointercancel", finish, true);
+      dragStateRef.current?.(null);
       if (!moved) return;
       const dx = (event.clientX ?? 0) - startX;
       const dy = (event.clientY ?? 0) - startY;
@@ -377,6 +406,7 @@ export function AgentPane({
         styles.pane,
         { width, height },
         active ? styles.paneActive : null,
+        dropTarget ? styles.paneDropTarget : null,
         dragging ? styles.paneDragging : null,
         { transform: dragXY.getTranslateTransform() },
       ]}
@@ -384,32 +414,34 @@ export function AgentPane({
       <Pressable accessibilityRole="none" onPress={onActivate} style={styles.paneInner}>
       <View style={styles.header}>
         <View style={styles.headerBar} />
-        <View ref={gripRef} style={styles.gripWrap}>
-          <Text style={styles.grip}>⠿</Text>
-        </View>
-        <View style={styles.grow}>
-          <View style={styles.titleRow}>
-            <Text numberOfLines={1} style={styles.title}>
-              {workspaceTitle}
-            </Text>
-            {statusLabel ? (
-              <View
-                style={[styles.statusPill, { borderColor: statusColor(effectiveStatus, theme) }]}
-              >
-                <Text
-                  style={[
-                    styles.statusPillText,
-                    { color: statusColor(effectiveStatus, theme) },
-                  ]}
-                >
-                  {statusLabel}
-                </Text>
-              </View>
-            ) : null}
+        <View ref={gripRef} style={styles.dragRegion}>
+          <View style={styles.gripWrap}>
+            <Text style={styles.grip}>⠿</Text>
           </View>
-          <Text numberOfLines={1} style={styles.meta}>
-            {secondaryTitle}
-          </Text>
+          <View style={styles.grow}>
+            <View style={styles.titleRow}>
+              <Text numberOfLines={1} style={styles.title}>
+                {workspaceTitle}
+              </Text>
+              {statusLabel ? (
+                <View
+                  style={[styles.statusPill, { borderColor: statusColor(effectiveStatus, theme) }]}
+                >
+                  <Text
+                    style={[
+                      styles.statusPillText,
+                      { color: statusColor(effectiveStatus, theme) },
+                    ]}
+                  >
+                    {statusLabel}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+            <Text numberOfLines={1} style={styles.meta}>
+              {secondaryTitle}
+            </Text>
+          </View>
         </View>
         {navigation ? (
           <Pressable

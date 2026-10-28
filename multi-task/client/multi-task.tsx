@@ -191,8 +191,17 @@ interface TileGrid {
 }
 
 /**
+ * 单行铺满时单元格允许的最大瘦高比（高 / 宽）。
+ * 3 个以内尽量一行铺满（窄一点也还能用）；4 个以上一行会把每个面板压成细条，
+ * 不如退回更接近方形的网格，所以门槛收紧。
+ */
+const maxSingleRowAspect = (count: number) => (count <= 3 ? 3 : 2.4);
+
+/**
  * 按任务数量把可用区域平铺成网格：
- * - 列数限制在「单元格不窄于 minCellWidth」的范围内，并选最接近正方形的方案；
+ * - 优先「一行铺满」：只要每格仍不窄于 minCellWidth、也不会被拉成瘦高条，
+ *   就让 N 个任务并排成 N 列（3 个任务就是 3 竖列，而不是 2+1 再让底下一个通栏）；
+ * - 装不下一行时，列数限制在「单元格不窄于 minCellWidth」的范围内，并选最接近正方形的方案；
  * - 高度不够时保底 minCellHeight，整体超出可用高度时改为纵向滚动。
  */
 function computeTileGrid(
@@ -204,6 +213,13 @@ function computeTileGrid(
   gap: number,
 ): TileGrid | null {
   if (count <= 0 || width <= 0 || height <= 0) return null;
+  const singleRowCellWidth = (width - gap * (count - 1)) / count;
+  if (
+    singleRowCellWidth >= minCellWidth &&
+    height / singleRowCellWidth <= maxSingleRowAspect(count)
+  ) {
+    return { cols: count, rows: 1, cellHeight: Math.max(height, minCellHeight) };
+  }
   const maxCols = Math.max(1, Math.min(count, Math.floor((width + gap) / (minCellWidth + gap))));
   let cols = 1;
   let bestScore = Number.POSITIVE_INFINITY;
@@ -211,8 +227,8 @@ function computeTileGrid(
     const rows = Math.ceil(count / candidate);
     const ratio = width / candidate / (height / rows);
     const empty = candidate * rows - count;
-    // 越接近 1:1 越好；空位给一点惩罚，尽量铺满行。
-    const score = Math.abs(Math.log(ratio)) + empty * 0.12;
+    // 越接近 1:1 越好；空位给一点惩罚，尽量铺满行（4 个任务会优先 2×2 而不是 3+1）。
+    const score = Math.abs(Math.log(ratio)) + empty * 0.3;
     if (score < bestScore) {
       bestScore = score;
       cols = candidate;
@@ -232,6 +248,11 @@ interface PaneRow {
   height: number;
 }
 
+/** 权重是否有效（只有正数才参与分配）。 */
+function isValidWeight(weight: number | undefined): weight is number {
+  return typeof weight === "number" && Number.isFinite(weight) && weight > 0;
+}
+
 /** 按权重把总长度分给每一项；权重缺失 / 非法时退化为等分。 */
 function distribute(weights: number[], total: number): number[] {
   const safe = weights.map((weight) =>
@@ -244,6 +265,8 @@ function distribute(weights: number[], total: number): number[] {
 /**
  * 在列数固定的前提下按权重计算每行宽度与行高：
  * 默认权重都是 1（等价于原来的均分平铺）；拖拽分隔条后使用持久化下来的权重。
+ * 不满一行的尾行：只有 1 个面板时不再拉成整条通栏（沿用满行的单元格宽度，剩余空间留在右侧）；
+ * 有 2 个以上则仍然等分铺满本行，不至于留一大块空白。
  */
 function computePaneRows(
   views: MultiTaskView[],
@@ -261,24 +284,57 @@ function computePaneRows(
   const rows = chunks.length;
   // 高度不够时保底最小行高，整体超出可用高度就由外层 ScrollView 滚动。
   const availableHeight = Math.max(height - gap * (rows - 1), minRowHeight * rows);
+  // 行高同理：所有行都带 weight 才按权重分，否则等分。
+  const rowHeightsWeighted = chunks.every((chunk) => isValidWeight(chunk[0]?.heightWeight));
   const heights = distribute(
-    chunks.map((chunk) => chunk[0]?.heightWeight ?? 1),
+    chunks.map((chunk) => (rowHeightsWeighted ? chunk[0]!.heightWeight! : 1)),
     availableHeight,
   );
-  return chunks.map((chunk, rowIndex) => ({
-    views: chunk,
-    widths: distribute(
-      chunk.map((view) => view.widthWeight ?? 1),
-      width - gap * (chunk.length - 1),
-    ),
-    height: Math.max(minRowHeight, heights[rowIndex] ?? minRowHeight),
-  }));
+  // 满行时的单元格宽度：尾行只剩 1 个面板时按它铺，避免变成整条通栏。
+  const cellWidth = Math.max(1, (width - gap * (cols - 1)) / cols);
+  return chunks.map((chunk, rowIndex) => {
+    // 只有一个面板的尾行用满行单元格宽度，其余情况按本行面板数量铺满。
+    const rowWidth = chunk.length > 1 ? width - gap * (chunk.length - 1) : cellWidth;
+    // 权重是像素量纲（拖拽时的实际宽高），缺省值又是 1：一旦同一行里只有部分面板带权重，
+    // 没权重的会被压成 1px。所以「全有权重才用权重，否则整行等分」。
+    const rowWeighted = chunk.every((view) => isValidWeight(view.widthWeight));
+    return {
+      views: chunk,
+      widths: distribute(
+        chunk.map((view) => (rowWeighted ? view.widthWeight! : 1)),
+        rowWidth,
+      ),
+      height: Math.max(minRowHeight, heights[rowIndex] ?? minRowHeight),
+    };
+  });
 }
 
 interface MeasurableElement {
   getBoundingClientRect(): { left: number; top: number };
 }
 
+interface SlotSpan {
+  start: number;
+  end: number;
+}
+
+/** 把一行（或一列）的尺寸换算成每个格子的起止区间，间隙算在两格之间。 */
+function slotSpans(sizes: number[], gap: number): SlotSpan[] {
+  let offset = 0;
+  return sizes.map((size) => {
+    const start = offset;
+    offset = start + size + gap;
+    return { start, end: start + size };
+  });
+}
+
+/** 找出坐标 value 落在第几个格子里（超出两端时夹到首 / 尾格）。 */
+function slotIndexAt(spans: SlotSpan[], value: number): number {
+  for (let index = 0; index < spans.length; index++) {
+    if (value < (spans[index]?.end ?? 0)) return index;
+  }
+  return Math.max(0, spans.length - 1);
+}
 interface GhostElementLike {
   style: { left?: string; top?: string };
 }
@@ -698,36 +754,62 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     );
   }, [views, persist]);
 
-  // 拖动结束后按位移换算目标格（只数展开的面板），再映射回完整顺序持久化。
+  // 拖动落点：把面板从原位置的**中心**拖到哪儿，就落到那块格子。
+  // 之前用「整行宽度」当步长算，拖一格要拖半屏才生效；现在逐格比较边界，
+  // 拖过相邻面板的中线就换位（支持不同宽度 / 多行）。
+  const resolveDropTarget = useCallback(
+    (viewId: string, dx: number, dy: number): MultiTaskView | null => {
+      if (!grid || layoutRows.length === 0) return null;
+      const origin = expandedViews.findIndex((view) => view.id === viewId);
+      if (origin < 0) return null;
+      const cols = Math.max(1, grid.cols);
+      const originRowIndex = Math.floor(origin / cols);
+      const row = layoutRows[originRowIndex];
+      if (!row) return null;
+
+      const colSpans = slotSpans(row.widths, gap);
+      const originCol = origin % cols;
+      const originX =
+        (colSpans[originCol]?.start ?? 0) + (row.widths[originCol] ?? 0) / 2;
+      const targetCol = slotIndexAt(colSpans, originX + dx);
+
+      const rowSpans = slotSpans(
+        layoutRows.map((layoutRow) => layoutRow.height),
+        gap,
+      );
+      const originY = (rowSpans[originRowIndex]?.start ?? 0) + row.height / 2;
+      const targetRow = slotIndexAt(rowSpans, originY + dy);
+
+      const index = Math.min(
+        Math.max(targetRow * cols + targetCol, 0),
+        expandedViews.length - 1,
+      );
+      return expandedViews[index] ?? null;
+    },
+    [grid, expandedViews, layoutRows, gap],
+  );
+
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+
+  // 拖动中实时高亮落点格：坐标没跨格就不写 state，避免每次 pointermove 都重渲染。
+  const handleDragState = useCallback(
+    (viewId: string, state: { dx: number; dy: number } | null) => {
+      if (!state) {
+        setDropTargetId(null);
+        return;
+      }
+      const target = resolveDropTarget(viewId, state.dx, state.dy);
+      const nextId = target && target.id !== viewId ? target.id : null;
+      setDropTargetId((current) => (current === nextId ? current : nextId));
+    },
+    [resolveDropTarget],
+  );
+
   const handleDrop = useCallback(
     (viewId: string, dx: number, dy: number) => {
-      if (!grid) return;
-      const originExpanded = expandedViews.findIndex((view) => view.id === viewId);
-      if (originExpanded < 0) return;
-      const cols = Math.max(1, grid.cols);
-      const rows = Math.max(1, grid.rows);
-      const clamp = (value: number, low: number, high: number) =>
-        Math.min(high, Math.max(low, value));
-      const originRowIndex = Math.floor(originExpanded / cols);
-      const originRow = layoutRows[originRowIndex];
-      const rowWidth = originRow
-        ? originRow.widths.reduce((total, width) => total + width, 0) +
-          gap * (originRow.widths.length - 1)
-        : paneArea.width;
-      const nextCol = clamp(
-        (originExpanded % cols) + Math.round(dx / Math.max(1, rowWidth)),
-        0,
-        cols - 1,
-      );
-      const nextRow = clamp(
-        originRowIndex + Math.round(dy / Math.max(1, originRow?.height ?? minRowHeight)),
-        0,
-        rows - 1,
-      );
-      const targetExpanded = clamp(nextRow * cols + nextCol, 0, expandedViews.length - 1);
-      if (targetExpanded === originExpanded) return;
-      const targetView = expandedViews[targetExpanded];
-      if (!targetView) return;
+      setDropTargetId(null);
+      const targetView = resolveDropTarget(viewId, dx, dy);
+      if (!targetView || targetView.id === viewId) return;
       const origin = views.findIndex((view) => view.id === viewId);
       const target = views.findIndex((view) => view.id === targetView.id);
       if (origin < 0 || target < 0) return;
@@ -737,7 +819,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       next.splice(target, 0, moved);
       void persist(next);
     },
-    [grid, expandedViews, views, persist, layoutRows, gap, paneArea.width, minRowHeight],
+    [resolveDropTarget, views, persist],
   );
 
   const retry = useCallback(() => setNonce((value) => value + 1), []);
@@ -936,11 +1018,13 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
                             height={row.height}
                             embedSrc={embedSrcFor(view)}
                             active={view.id === activeViewId}
+                            dropTarget={view.id === dropTargetId}
                             theme={theme}
                             navigation={navigation}
                             onActivate={() => setActiveViewId(view.id)}
                             onToggleCollapse={() => setViewCollapsed(view.id, !view.collapsed)}
                             onDrop={(dx, dy) => handleDrop(view.id, dx, dy)}
+                            onDragState={(state) => handleDragState(view.id, state)}
                             onRemove={requestRemove}
                           />
                         </Fragment>
