@@ -12,7 +12,7 @@ import {
   type MultiTaskView,
 } from "../shared/settings";
 import { AgentPane, statusColor, type AgentPaneInfo } from "./agent-pane";
-import { setFramesHidden, setKnownSources } from "./frame-pool";
+import { setFramesHidden, setFramesInteractive, setKnownSources, setResizeGuide } from "./frame-pool";
 import { WorkspacePicker, workspaceLabel } from "./agent-picker";
 import { ResizeHandle } from "./resize-handle";
 
@@ -139,20 +139,6 @@ function useStyles(theme: Theme, compact: boolean, toolbarSize: MultiTaskToolbar
         right: 0,
         bottom: 0,
         zIndex: 20,
-      },
-      resizeGhostVertical: {
-        position: "absolute" as const,
-        top: 0,
-        bottom: 0,
-        width: 2,
-        backgroundColor: theme.colors.accent,
-      },
-      resizeGhostHorizontal: {
-        position: "absolute" as const,
-        left: 0,
-        right: 0,
-        height: 2,
-        backgroundColor: theme.colors.accent,
       },
       // 「已隐藏」下拉浮层：点外面任何地方关掉，列表自己滚动。
       menuBackdrop: {
@@ -356,7 +342,14 @@ function computePaneRows(
 }
 
 interface MeasurableElement {
-  getBoundingClientRect(): { left: number; top: number };
+  getBoundingClientRect(): {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+  };
 }
 
 interface SlotSpan {
@@ -385,26 +378,26 @@ function slotIndexAt(spans: SlotSpan[], value: number): number {
   }
   return Math.max(0, spans.length - 1);
 }
-interface GhostElementLike {
-  style: { left?: string; top?: string };
-}
-
+// 拖动期间只渲染一条预览线，面板尺寸保持不变；松手后才一次性应用。
+// 内嵌面板是完整的 Paseo 实例，逐帧改 iframe 尺寸既卡又容易把内嵌页拖白。
 type ResizeSession =
   | {
       kind: "col";
       rowIndex: number;
       columnIndex: number;
       startX: number;
-      /** 预览线初始横坐标（相对屏幕根视图）。 */
-      ghostStart: number;
+      /** 预览线的起止（视口纵坐标）：平铺区域的上下边界。 */
+      guideStart: number;
+      guideEnd: number;
       widths: number[];
     }
   | {
       kind: "row";
       rowIndex: number;
       startY: number;
-      /** 预览线初始纵坐标（相对屏幕根视图）。 */
-      ghostStart: number;
+      /** 预览线的起止（视口横坐标）：平铺区域的左右边界。 */
+      guideStart: number;
+      guideEnd: number;
       heights: number[];
     };
 
@@ -671,7 +664,15 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
 
   // 「已隐藏」下拉是界面内浮层，打开时先藏起常驻 iframe，免得它盖住菜单（拖动排序同理，
   // 见下面的 draggingPane）。
-  useEffect(() => () => setFramesHidden(false), []);
+  // 卸载时顺手收掉拖拽留下的全局副作用（预览线 / 被禁用的 iframe 指针事件）。
+  useEffect(
+    () => () => {
+      setFramesHidden(false);
+      setFramesInteractive(true);
+      setResizeGuide(null);
+    },
+    [],
+  );
 
   const setViewCollapsed = useCallback(
     (viewId: string, collapsed: boolean) => {
@@ -692,67 +693,70 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     [setViewCollapsed],
   );
 
-  const screenRef = useRef<View>(null);
-  // 平铺区域的滚动视口：常驻 iframe 浮层要按它裁切。
+  // 平铺区域的滚动视口：常驻 iframe 浮层要按它裁切，预览线也按它裁长度。
   const panesClipRef = useRef<View>(null);
-  const ghostRef = useRef<View>(null);
   const resizeRef = useRef<ResizeSession | null>(null);
   // 拖动期间只渲染一条预览线，面板尺寸保持不变；松手后才一次性应用。
   // 内嵌面板是完整的 Paseo 实例，逐帧改 iframe 尺寸既卡又容易把内嵌页拖白。
-  const [dragOverlay, setDragOverlay] = useState<{
-    kind: "col" | "row";
-    left: number;
-    top: number;
-  } | null>(null);
+  // 预览线由 frame-pool 画在 overlay-root 里（和常驻 iframe 同层、高一级），否则会被 iframe 盖住。
+  const [dragOverlay, setDragOverlay] = useState<"col" | "row" | null>(null);
 
-  const screenRect = useCallback(() => {
-    const node = screenRef.current as unknown as MeasurableElement | null;
-    if (!node || typeof node.getBoundingClientRect !== "function") return { left: 0, top: 0 };
+  const panesRect = useCallback(() => {
+    const node = panesClipRef.current as unknown as MeasurableElement | null;
+    if (!node || typeof node.getBoundingClientRect !== "function") {
+      return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    }
     return node.getBoundingClientRect();
-  }, []);
-
-  // 直接改 DOM 位置，避免每次 pointermove 都触发 React 渲染。
-  const moveGhost = useCallback((kind: "col" | "row", left: number, top: number) => {
-    const ghost = ghostRef.current as unknown as GhostElementLike | null;
-    if (!ghost?.style) return;
-    if (kind === "col") ghost.style.left = `${left}px`;
-    else ghost.style.top = `${top}px`;
   }, []);
 
   const startColumnResize = useCallback(
     (rowIndex: number, columnIndex: number, position: { x: number; y: number }) => {
       const row = layoutRows[rowIndex];
       if (!row) return;
-      const rect = screenRect();
-      const ghostStart = position.x - rect.left;
+      const rect = panesRect();
       resizeRef.current = {
         kind: "col",
         rowIndex,
         columnIndex,
         startX: position.x,
-        ghostStart,
+        guideStart: rect.top,
+        guideEnd: rect.bottom,
         widths: row.widths.slice(),
       };
-      setDragOverlay({ kind: "col", left: ghostStart, top: position.y - rect.top });
+      setDragOverlay("col");
+      setResizeGuide({
+        orientation: "col",
+        at: position.x,
+        start: rect.top,
+        end: rect.bottom,
+        color: theme.colors.accent,
+      });
     },
-    [layoutRows, screenRect],
+    [layoutRows, panesRect, theme.colors.accent],
   );
 
   const startRowResize = useCallback(
     (rowIndex: number, position: { x: number; y: number }) => {
       if (layoutRows.length <= 1) return;
-      const rect = screenRect();
-      const ghostStart = position.y - rect.top;
+      const rect = panesRect();
       resizeRef.current = {
         kind: "row",
         rowIndex,
         startY: position.y,
-        ghostStart,
+        guideStart: rect.left,
+        guideEnd: rect.right,
         heights: layoutRows.map((row) => row.height),
       };
-      setDragOverlay({ kind: "row", left: position.x - rect.left, top: ghostStart });
+      setDragOverlay("row");
+      setResizeGuide({
+        orientation: "row",
+        at: position.y,
+        start: rect.left,
+        end: rect.right,
+        color: theme.colors.accent,
+      });
     },
-    [layoutRows, screenRect],
+    [layoutRows, panesRect, theme.colors.accent],
   );
 
   const moveResize = useCallback(
@@ -768,7 +772,13 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
           min - before,
           Math.min(total - min - before, position.x - session.startX),
         );
-        moveGhost("col", session.ghostStart + delta, 0);
+        setResizeGuide({
+          orientation: "col",
+          at: session.startX + delta,
+          start: session.guideStart,
+          end: session.guideEnd,
+          color: theme.colors.accent,
+        });
         return;
       }
       const before = session.heights[session.rowIndex - 1] ?? 0;
@@ -778,9 +788,15 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
         min - before,
         Math.min(total - min - before, position.y - session.startY),
       );
-      moveGhost("row", 0, session.ghostStart + delta);
+      setResizeGuide({
+        orientation: "row",
+        at: session.startY + delta,
+        start: session.guideStart,
+        end: session.guideEnd,
+        color: theme.colors.accent,
+      });
     },
-    [moveGhost, minPaneWidth, minRowHeight],
+    [minPaneWidth, minRowHeight, theme.colors.accent],
   );
 
   const endResize = useCallback(
@@ -788,6 +804,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
       const session = resizeRef.current;
       resizeRef.current = null;
       setDragOverlay(null);
+      setResizeGuide(null);
       if (!session) return;
       if (session.kind === "col") {
         const row = layoutRows[session.rowIndex];
@@ -955,7 +972,7 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   }
 
   return (
-    <View style={styles.screen} ref={screenRef}>
+    <View style={styles.screen}>
       {toolbarCollapsed ? (
         <View
           style={styles.toolbar}
@@ -1193,18 +1210,10 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
           style={[
             styles.resizeShield,
             {
-              cursor: dragOverlay.kind === "col" ? "col-resize" : "row-resize",
+              cursor: dragOverlay === "col" ? "col-resize" : "row-resize",
             } as unknown as ViewStyle,
           ]}
-        >
-          <View
-            ref={ghostRef}
-            style={[
-              dragOverlay.kind === "col" ? styles.resizeGhostVertical : styles.resizeGhostHorizontal,
-              dragOverlay.kind === "col" ? { left: dragOverlay.left } : { top: dragOverlay.top },
-            ]}
-          />
-        </View>
+        />
       ) : null}
 
       <RemoveConfirm

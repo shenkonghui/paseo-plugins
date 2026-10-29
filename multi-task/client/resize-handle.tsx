@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { View, type ViewStyle } from "react-native";
+import { setFramesInteractive } from "./frame-pool";
 
 /** 拖动用到的 DOM 事件/目标的最小结构，避免依赖 DOM 类型（插件 tsconfig 不带 lib.dom）。 */
 interface PointerLike {
@@ -61,6 +62,9 @@ export function ResizeHandle({
       event.stopPropagation?.();
       let lastX = event.clientX ?? 0;
       let lastY = event.clientY ?? 0;
+      // 常驻 iframe 是独立文档，指针一进去宿主就收不到 pointermove：拖动期间让它不接收指针事件，
+      // 否则只能在面板之间的缝隙里拖动，一进面板就「拖不动」。
+      setFramesInteractive(false);
       handlers.current.onStart({ x: lastX, y: lastY });
       const handleMove = (move: PointerLike) => {
         lastX = move.clientX ?? lastX;
@@ -72,6 +76,7 @@ export function ResizeHandle({
         lastY = event.clientY ?? lastY;
         detach?.();
         detach = null;
+        setFramesInteractive(true);
         handlers.current.onEnd({ x: lastX, y: lastY });
       };
       detach = () => {
@@ -88,6 +93,8 @@ export function ResizeHandle({
     return () => {
       detach?.();
       detach = null;
+      // 拖到一半被卸载（切换界面 / 面板被移除）时也要把 iframe 的指针事件还回去。
+      setFramesInteractive(true);
       node.removeEventListener("pointerdown", onDown);
     };
   }, []);

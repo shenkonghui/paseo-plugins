@@ -436,6 +436,55 @@ export function leaseFrame(input: {
   };
 }
 
+export interface ResizeGuide {
+  orientation: "col" | "row";
+  /** 线在主轴上（col 用横轴）的视口坐标。 */
+  at: number;
+  /** 线在另一轴上的起止视口坐标：裁到平铺区域，别越过工具栏。 */
+  start: number;
+  end: number;
+  color: string;
+}
+
+let resizeGuide: DomElementLike | null = null;
+
+/**
+ * 调整面板尺寸时的预览线。必须画在 `#overlay-root` 里（层号 2）：常驻 iframe 也在那个容器
+ * （层号 1），插件界面自己的浮层抬不到它上面——线会被 iframe 整个盖住，看起来像「拖不进窗口」。
+ * 始终 pointer-events: none，不干扰拖动。
+ */
+export function setResizeGuide(guide: ResizeGuide | null): void {
+  if (!guide) {
+    resizeGuide?.style.setProperty("display", "none");
+    return;
+  }
+  const doc = getDocument();
+  if (!doc) return;
+  if (!resizeGuide) {
+    const node = doc.createElement("div");
+    node.style.setProperty("position", "fixed");
+    node.style.setProperty("z-index", "2");
+    node.style.setProperty("pointer-events", "none");
+    node.style.setProperty("border-radius", "1px");
+    ensureOverlayRoot(doc).appendChild(node);
+    resizeGuide = node;
+  }
+  const style = resizeGuide.style;
+  style.setProperty("display", "block");
+  style.setProperty("background-color", guide.color);
+  if (guide.orientation === "col") {
+    style.setProperty("left", `${guide.at}px`);
+    style.setProperty("top", `${guide.start}px`);
+    style.setProperty("width", "2px");
+    style.setProperty("height", `${Math.max(0, guide.end - guide.start)}px`);
+  } else {
+    style.setProperty("top", `${guide.at}px`);
+    style.setProperty("left", `${guide.start}px`);
+    style.setProperty("height", "2px");
+    style.setProperty("width", `${Math.max(0, guide.end - guide.start)}px`);
+  }
+}
+
 /** 面板里的浮层（下拉菜单等）打开时，先把常驻 iframe 藏起来，免得盖住浮层。 */
 export function setFramesHidden(hidden: boolean): void {
   if (framesHidden === hidden) return;
@@ -477,5 +526,7 @@ export function disposeAllFrames(): void {
   knownSources.clear();
   framesHidden = false;
   framesInteractive = true;
+  resizeGuide?.remove?.();
+  resizeGuide = null;
   for (const entry of [...entries]) destroyEntry(entry);
 }
