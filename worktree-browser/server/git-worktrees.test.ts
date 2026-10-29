@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { sanitizePathSegment } from "../shared/worktrees";
+import { sanitizePathSegment, slugifyWorktreeName } from "../shared/worktrees";
 import { parseNameStatus, parsePorcelainChanges, parseSubmodulePaths } from "./git-submodules";
 import {
   createWorktree,
@@ -81,6 +81,20 @@ describe("sanitizePathSegment", () => {
 
   it("keeps dots, dashes and unicode letters", () => {
     expect(sanitizePathSegment("release-1.2_预发")).toBe("release-1.2_预发");
+  });
+});
+
+describe("slugifyWorktreeName", () => {
+  it("kebab-cases the branch name", () => {
+    expect(slugifyWorktreeName("feature/Foo Bar")).toBe("feature-foo-bar");
+    expect(slugifyWorktreeName("--Fix--Bug--")).toBe("fix-bug");
+  });
+
+  it("matches the daemon slug rules on long names", () => {
+    const slug = slugifyWorktreeName(`${"a".repeat(30)}/${"b".repeat(30)}`);
+    expect(slug.length).toBeLessThanOrEqual(50);
+    expect(slug.endsWith("-")).toBe(false);
+    expect(slug).toBe(slugifyWorktreeName(slug));
   });
 });
 

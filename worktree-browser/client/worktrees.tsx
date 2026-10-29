@@ -1,3 +1,4 @@
+import * as pluginClient from "@getpaseo/plugin/client";
 import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Modal, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -7,11 +8,19 @@ import {
   listWorktreesRpc,
   removeWorktreeRpc,
   sanitizePathSegment,
+  slugifyWorktreeName,
   worktreeBranchesRpc,
   type Worktree,
 } from "../shared/worktrees";
+import {
+  createLocalBackend,
+  createRemoteBackend,
+  type RemotePaseoApi,
+  type WorktreeBackend,
+} from "./backends";
 
 type Theme = PluginSurfaceProps["theme"];
+type PaseoApi = ReturnType<typeof usePaseo>;
 
 interface ProjectOption {
   projectId: string;
@@ -24,6 +33,27 @@ interface WorkspaceLink {
   id: string;
   name: string;
 }
+
+interface HostSummary {
+  serverId: string;
+  label: string;
+  status: "idle" | "connecting" | "online" | "offline" | "error";
+}
+
+/**
+ * `useHosts` / `getPaseoClient` are injected by the app's plugin runtime. They stay
+ * optional so the surface still works on hosts that predate them.
+ */
+const hostRuntime = pluginClient as unknown as {
+  useHosts?: () => readonly HostSummary[];
+  getPaseoClient?: (serverId: string) => PaseoApi;
+};
+
+const EMPTY_HOSTS: readonly HostSummary[] = [];
+function useNoHosts(): readonly HostSummary[] {
+  return EMPTY_HOSTS;
+}
+const useConfiguredHosts = hostRuntime.useHosts ?? useNoHosts;
 
 function basename(path: string): string {
   return path.split(/[\\/]/).findLast((part) => part.length > 0) ?? path;
@@ -44,15 +74,16 @@ function formatRelativeTime(mtimeMs: number | null, now = Date.now()): string {
   return `${Math.floor(hours / 24)} 天前`;
 }
 
-function useProjects(paseo: ReturnType<typeof usePaseo>) {
+function useProjects(getApi: () => PaseoApi) {
   const [projects, setProjects] = useState<ProjectOption[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void paseo.projects
-      .list()
-      .then((result) => {
-        if (cancelled) return undefined;
+    setProjects(null);
+    void (async () => {
+      try {
+        const result = await getApi().projects.list();
+        if (cancelled) return;
         setProjects(
           result.projects.map((project) => ({
             projectId: project.projectId,
@@ -61,28 +92,27 @@ function useProjects(paseo: ReturnType<typeof usePaseo>) {
             kind: project.projectKind,
           })),
         );
-        return undefined;
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) setProjects([]);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [paseo]);
+  }, [getApi]);
 
   return projects;
 }
 
-function useWorkspaceIndex(paseo: ReturnType<typeof usePaseo>, nonce: number) {
+function useWorkspaceIndex(getApi: () => PaseoApi, nonce: number) {
   const [index, setIndex] = useState<ReadonlyMap<string, WorkspaceLink>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
-    void paseo.workspaces
-      .list()
-      .then((result) => {
-        if (cancelled) return undefined;
+    void (async () => {
+      try {
+        const result = await getApi().workspaces.list();
+        if (cancelled) return;
         const byCwd = new Map<string, WorkspaceLink>();
         for (const workspace of result.entries) {
           if (workspace.workspaceDirectory) {
@@ -90,22 +120,19 @@ function useWorkspaceIndex(paseo: ReturnType<typeof usePaseo>, nonce: number) {
           }
         }
         setIndex(byCwd);
-        return undefined;
-      })
-      .catch(() => {});
+      } catch {
+        if (!cancelled) setIndex(new Map());
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [paseo, nonce]);
+  }, [getApi, nonce]);
 
   return index;
 }
 
-function useWorktrees(
-  listWorktrees: (input: { repoRoot: string }) => Promise<{ worktrees: Worktree[] }>,
-  repoRoot: string | null,
-  nonce: number,
-) {
+function useWorktrees(backend: WorktreeBackend, repoRoot: string | null, nonce: number) {
   const [worktrees, setWorktrees] = useState<Worktree[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -114,10 +141,11 @@ function useWorktrees(
     let cancelled = false;
     setWorktrees(null);
     setError(null);
-    void listWorktrees({ repoRoot })
+    void backend
+      .listWorktrees(repoRoot)
       .then((result) => {
         if (cancelled) return undefined;
-        const sorted = [...result.worktrees].sort(
+        const sorted = [...result].sort(
           (a, b) => Number(b.main) - Number(a.main) || (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0),
         );
         setWorktrees(sorted);
@@ -131,7 +159,7 @@ function useWorktrees(
     return () => {
       cancelled = true;
     };
-  }, [listWorktrees, repoRoot, nonce]);
+  }, [backend, repoRoot, nonce]);
 
   return { worktrees, error };
 }
@@ -152,6 +180,26 @@ function useStyles(theme: Theme, compact: boolean) {
         gap: 8,
       },
       toolbarLabel: { color: theme.colors.foregroundMuted, fontSize: 13 },
+      hostToolbar: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        paddingHorizontal: compact ? 12 : 20,
+        paddingTop: 8,
+        gap: 8,
+      },
+      chipDisabled: {
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        opacity: 0.4,
+      },
+      hintRow: {
+        paddingHorizontal: compact ? 12 : 20,
+        paddingTop: 6,
+      },
+      hintText: { color: theme.colors.foregroundMuted, fontSize: 11 },
       searchRow: {
         paddingHorizontal: compact ? 12 : 20,
         paddingTop: 8,
@@ -307,6 +355,10 @@ function useStyles(theme: Theme, compact: boolean) {
         color: theme.colors.foreground,
         fontSize: 13,
       },
+      promptInput: {
+        minHeight: 72,
+        textAlignVertical: "top" as const,
+      },
       branchList: {
         maxHeight: 180,
         borderWidth: 1,
@@ -354,6 +406,37 @@ function ProjectChip({
       style={selected ? styles.chipSelected : styles.chip}
     >
       <Text style={styles.chipText}>{project.name}</Text>
+    </Pressable>
+  );
+}
+
+function HostChip({
+  host,
+  selected,
+  onSelect,
+  styles,
+}: {
+  host: HostSummary;
+  selected: boolean;
+  onSelect: (serverId: string) => void;
+  styles: ReturnType<typeof useStyles>;
+}) {
+  const disabled = host.status !== "online";
+  const handlePress = useCallback(() => {
+    if (!disabled) onSelect(host.serverId);
+  }, [disabled, onSelect, host.serverId]);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`主机 ${host.label}`}
+      disabled={disabled}
+      onPress={handlePress}
+      style={selected ? styles.chipSelected : disabled ? styles.chipDisabled : styles.chip}
+    >
+      <Text style={styles.chipText}>
+        {host.label}
+        {host.status === "online" ? "" : ` (${host.status})`}
+      </Text>
     </Pressable>
   );
 }
@@ -470,6 +553,7 @@ function BranchRow({
 
 function CreateWorktreeModal({
   open,
+  backend,
   repoRoot,
   projectName,
   onClose,
@@ -477,14 +561,13 @@ function CreateWorktreeModal({
   styles,
 }: {
   open: boolean;
+  backend: WorktreeBackend;
   repoRoot: string;
   projectName: string;
   onClose: () => void;
   onCreated: () => void;
   styles: ReturnType<typeof useStyles>;
 }) {
-  const listBranches = useRpc(worktreeBranchesRpc);
-  const createWorktree = useRpc(createWorktreeRpc);
   const toast = useToast();
   const [branches, setBranches] = useState<string[] | null>(null);
   const [branchesError, setBranchesError] = useState<string | null>(null);
@@ -512,7 +595,8 @@ function CreateWorktreeModal({
     setTarget("");
     setDirectory(defaultDirectory(""));
     setDirDirty(false);
-    void listBranches({ repoRoot })
+    void backend
+      .listBranches(repoRoot)
       .then((result) => {
         if (cancelled) return undefined;
         setBranches(result.branches);
@@ -527,7 +611,7 @@ function CreateWorktreeModal({
     return () => {
       cancelled = true;
     };
-  }, [open, repoRoot, listBranches, defaultDirectory]);
+  }, [open, backend, repoRoot, defaultDirectory]);
 
   const handleTargetChange = useCallback(
     (value: string) => {
@@ -546,7 +630,7 @@ function CreateWorktreeModal({
     if (!source || !canSubmit) return;
     setSubmitting(true);
     try {
-      await createWorktree({
+      await backend.createWorktree({
         repoRoot,
         sourceBranch: source,
         targetBranch: target.trim(),
@@ -562,7 +646,7 @@ function CreateWorktreeModal({
     } finally {
       setSubmitting(false);
     }
-  }, [source, canSubmit, createWorktree, repoRoot, target, directory, toast, onCreated, onClose]);
+  }, [source, canSubmit, backend, repoRoot, target, directory, toast, onCreated, onClose]);
   const handleOpenChange = useCallback(
     (next: boolean) => {
       if (!next) onClose();
@@ -639,6 +723,394 @@ function CreateWorktreeModal({
   );
 }
 
+type WorkspacePlacement = "paseo" | "custom";
+
+interface ProviderChoice {
+  id: string;
+  label: string;
+}
+
+function useProviderChoices(
+  paseo: ReturnType<typeof usePaseo>,
+  cwd: string,
+  enabled: boolean,
+): ProviderChoice[] | null {
+  const [choices, setChoices] = useState<ProviderChoice[] | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      setChoices(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const available = await paseo.providers.listAvailable();
+      const models = await Promise.all(
+        available.providers
+          .filter((entry) => entry.available)
+          .map(async (entry) => ({
+            provider: entry.provider,
+            models: (await paseo.providers.listModels(entry.provider, { cwd })).models ?? [],
+          })),
+      );
+      if (cancelled) return;
+      const next: ProviderChoice[] = [];
+      for (const entry of models) {
+        for (const model of entry.models) {
+          if (model.isSelectable === false) continue;
+          next.push({ id: `${entry.provider}/${model.id}`, label: model.label });
+        }
+      }
+      setChoices(next);
+    })().catch(() => {
+      if (!cancelled) setChoices([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [paseo, cwd, enabled]);
+
+  return choices;
+}
+
+function CreateWorkspaceModal({
+  open,
+  api,
+  backend,
+  repoRoot,
+  project,
+  onClose,
+  onCreated,
+  styles,
+}: {
+  open: boolean;
+  api: PaseoApi;
+  backend: WorktreeBackend;
+  repoRoot: string;
+  project: ProjectOption;
+  onClose: () => void;
+  onCreated: (workspaceId: string) => void;
+  styles: ReturnType<typeof useStyles>;
+}) {
+  const paseo = api;
+  const toast = useToast();
+  const [branches, setBranches] = useState<string[] | null>(null);
+  const [branchesError, setBranchesError] = useState<string | null>(null);
+  const [baseBranch, setBaseBranch] = useState<string | null>(null);
+  const [placement, setPlacement] = useState<WorkspacePlacement>("paseo");
+  const [branchName, setBranchName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugDirty, setSlugDirty] = useState(false);
+  const [directory, setDirectory] = useState("");
+  const [dirDirty, setDirDirty] = useState(false);
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [providerId, setProviderId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const projectSlug = sanitizePathSegment(project.name) || "project";
+  const defaultDirectory = useCallback(
+    (branch: string) => `~/.worktrees/${projectSlug}/${slugifyWorktreeName(branch)}`,
+    [projectSlug],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setBranches(null);
+    setBranchesError(null);
+    setBaseBranch(null);
+    setPlacement("paseo");
+    setBranchName("");
+    setSlug("");
+    setSlugDirty(false);
+    setDirectory(defaultDirectory(""));
+    setDirDirty(false);
+    setTitle("");
+    setPrompt("");
+    setProviderId(null);
+    void backend
+      .listBranches(repoRoot)
+      .then((result) => {
+        if (cancelled) return undefined;
+        setBranches(result.branches);
+        setBaseBranch(result.currentBranch ?? result.branches[0] ?? null);
+        return undefined;
+      })
+      .catch((failure: unknown) => {
+        if (!cancelled) {
+          setBranchesError(failure instanceof Error ? failure.message : String(failure));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, backend, repoRoot, defaultDirectory]);
+
+  const providerChoices = useProviderChoices(paseo, repoRoot, prompt.trim().length > 0);
+
+  const handleBranchNameChange = useCallback(
+    (value: string) => {
+      setBranchName(value);
+      if (!slugDirty) setSlug(slugifyWorktreeName(value));
+      if (!dirDirty) setDirectory(defaultDirectory(value));
+    },
+    [slugDirty, dirDirty, defaultDirectory],
+  );
+  const handleSlugChange = useCallback((value: string) => {
+    setSlugDirty(true);
+    setSlug(value);
+  }, []);
+  const handleDirectoryChange = useCallback((value: string) => {
+    setDirDirty(true);
+    setDirectory(value);
+  }, []);
+
+  const trimmedBranch = branchName.trim();
+  const trimmedSlug = slug.trim() || slugifyWorktreeName(trimmedBranch);
+  const trimmedDirectory = directory.trim();
+  const canSubmit =
+    Boolean(baseBranch && trimmedBranch) &&
+    (placement === "paseo" || Boolean(trimmedDirectory)) &&
+    (prompt.trim().length === 0 || Boolean(providerId)) &&
+    !submitting;
+
+  const handleSubmit = useCallback(async () => {
+    if (!canSubmit || !baseBranch) return;
+    setSubmitting(true);
+    try {
+      const workspaceTitle = title.trim() || trimmedBranch;
+      let workspace;
+      if (placement === "paseo") {
+        workspace = await paseo.workspaces.create({
+          title: workspaceTitle,
+          source: {
+            kind: "worktree",
+            cwd: repoRoot,
+            projectId: project.projectId,
+            action: "branch-off",
+            refName: baseBranch,
+            branchName: trimmedBranch,
+            worktreeSlug: trimmedSlug,
+          },
+        });
+      } else {
+        const created = await backend.createWorktree({
+          repoRoot,
+          sourceBranch: baseBranch,
+          targetBranch: trimmedBranch,
+          directory: trimmedDirectory,
+        });
+        try {
+          workspace = await paseo.workspaces.create({
+            title: workspaceTitle,
+            source: {
+              kind: "directory",
+              path: created.path,
+              projectId: project.projectId,
+            },
+          });
+        } catch (failure) {
+          await backend
+            .removeWorktree({ repoRoot, path: created.path, branch: null, force: true })
+            .catch(() => undefined);
+          throw failure;
+        }
+      }
+      const initialPrompt = prompt.trim();
+      if (initialPrompt && providerId) {
+        await workspace.agents.create({
+          config: { provider: providerId },
+          prompt: initialPrompt,
+        });
+      }
+      toast.show("工作区已创建", { variant: "success" });
+      onCreated(workspace.id);
+      onClose();
+    } catch (failure) {
+      toast.show(failure instanceof Error ? failure.message : String(failure), {
+        variant: "error",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [
+    canSubmit,
+    baseBranch,
+    title,
+    trimmedBranch,
+    trimmedSlug,
+    trimmedDirectory,
+    placement,
+    prompt,
+    providerId,
+    paseo,
+    repoRoot,
+    project.projectId,
+    backend,
+    toast,
+    onCreated,
+    onClose,
+  ]);
+
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (!next) onClose();
+    },
+    [onClose],
+  );
+
+  let branchPicker = <Text style={styles.mutedText}>正在加载…</Text>;
+  if (branchesError) {
+    branchPicker = (
+      <Text accessibilityRole="alert" style={styles.errorText}>
+        {branchesError}
+      </Text>
+    );
+  } else if (branches) {
+    branchPicker = (
+      <ScrollView style={styles.branchList} keyboardShouldPersistTaps="handled">
+        {branches.map((branch) => (
+          <BranchRow
+            key={branch}
+            branch={branch}
+            selected={branch === baseBranch}
+            onSelect={setBaseBranch}
+            styles={styles}
+          />
+        ))}
+      </ScrollView>
+    );
+  }
+
+  return (
+    <Modal title="新建工作区" open={open} onOpenChange={handleOpenChange}>
+      <Modal.Content>
+        <Text style={styles.fieldLabel}>放置方式</Text>
+        <View style={styles.chips}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setPlacement("paseo")}
+            style={placement === "paseo" ? styles.chipSelected : styles.chip}
+          >
+            <Text style={styles.chipText}>Paseo 管理路径</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setPlacement("custom")}
+            style={placement === "custom" ? styles.chipSelected : styles.chip}
+          >
+            <Text style={styles.chipText}>自定义绝对路径</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.fieldLabel}>源分支（基线）</Text>
+        {branchPicker}
+        <Text style={styles.fieldLabel}>新分支名</Text>
+        <TextInput
+          value={branchName}
+          onChangeText={handleBranchNameChange}
+          placeholder="例如 feature/foo"
+          placeholderTextColor={styles.mutedText.color}
+          style={styles.fieldInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {placement === "paseo" ? (
+          <>
+            <Text style={styles.fieldLabel}>worktree 目录名</Text>
+            <TextInput
+              value={slug}
+              onChangeText={handleSlugChange}
+              placeholder="feature-foo"
+              placeholderTextColor={styles.mutedText.color}
+              style={styles.fieldInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </>
+        ) : (
+          <>
+            <Text style={styles.fieldLabel}>worktree 绝对路径</Text>
+            <TextInput
+              value={directory}
+              onChangeText={handleDirectoryChange}
+              placeholder="~/.worktrees/…"
+              placeholderTextColor={styles.mutedText.color}
+              style={styles.fieldInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </>
+        )}
+        <Text style={styles.fieldLabel}>工作区标题</Text>
+        <TextInput
+          value={title}
+          onChangeText={setTitle}
+          placeholder={trimmedBranch || "工作区标题"}
+          placeholderTextColor={styles.mutedText.color}
+          style={styles.fieldInput}
+        />
+        <Text style={styles.fieldLabel}>初始提示词（可选）</Text>
+        <TextInput
+          value={prompt}
+          onChangeText={setPrompt}
+          placeholder="创建后自动启动的 agent 提示词"
+          placeholderTextColor={styles.mutedText.color}
+          style={[styles.fieldInput, styles.promptInput]}
+          multiline
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {prompt.trim().length > 0 ? (
+          <>
+            <Text style={styles.fieldLabel}>provider</Text>
+            {providerChoices === null ? (
+              <Text style={styles.mutedText}>正在加载…</Text>
+            ) : providerChoices.length === 0 ? (
+              <Text style={styles.mutedText}>没有可用的 provider</Text>
+            ) : (
+              <ScrollView
+                horizontal
+                style={styles.chipsScroll}
+                contentContainerStyle={styles.chips}
+              >
+                {providerChoices.map((choice) => (
+                  <Pressable
+                    key={choice.id}
+                    accessibilityRole="button"
+                    onPress={() => setProviderId(choice.id)}
+                    style={choice.id === providerId ? styles.chipSelected : styles.chip}
+                  >
+                    <Text style={styles.chipText}>{choice.label}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+          </>
+        ) : null}
+        <View style={styles.submitRow}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={onClose}
+            style={styles.actionButtonSecondary}
+          >
+            <Text style={styles.actionButtonSecondaryText}>取消</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="创建工作区"
+            disabled={!canSubmit}
+            onPress={handleSubmit}
+            style={styles.actionButton}
+          >
+            <Text style={styles.actionButtonText}>{submitting ? "创建中…" : "创建工作区"}</Text>
+          </Pressable>
+        </View>
+      </Modal.Content>
+    </Modal>
+  );
+}
+
 function OptionToggle({
   label,
   checked,
@@ -662,18 +1134,19 @@ function OptionToggle({
 
 function RemoveWorktreeModal({
   worktree,
+  backend,
   repoRoot,
   onClose,
   onRemoved,
   styles,
 }: {
   worktree: Worktree | null;
+  backend: WorktreeBackend;
   repoRoot: string;
   onClose: () => void;
   onRemoved: () => void;
   styles: ReturnType<typeof useStyles>;
 }) {
-  const removeWorktree = useRpc(removeWorktreeRpc);
   const toast = useToast();
   const [force, setForce] = useState(false);
   const [deleteBranch, setDeleteBranch] = useState(false);
@@ -699,9 +1172,10 @@ function RemoveWorktreeModal({
     if (!worktree || submitting) return;
     setSubmitting(true);
     try {
-      const result = await removeWorktree({
+      const result = await backend.removeWorktree({
         repoRoot,
         path: worktree.path,
+        branch: worktree.branch,
         force,
         deleteBranch,
       });
@@ -720,7 +1194,7 @@ function RemoveWorktreeModal({
     } finally {
       setSubmitting(false);
     }
-  }, [worktree, submitting, removeWorktree, repoRoot, force, deleteBranch, toast, onRemoved, onClose]);
+  }, [worktree, submitting, backend, repoRoot, force, deleteBranch, toast, onRemoved, onClose]);
 
   const title = worktree?.branch ?? "(detached)";
   return (
@@ -767,33 +1241,89 @@ function RemoveWorktreeModal({
   );
 }
 
-export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProps) {
+export function WorktreeSurface({ theme, host, layout, navigation }: PluginSurfaceProps) {
   const paseo = usePaseo();
   const listWorktrees = useRpc(listWorktreesRpc);
+  const listBranchesRpcFn = useRpc(worktreeBranchesRpc);
+  const createWorktreeRpcFn = useRpc(createWorktreeRpc);
+  const removeWorktreeRpcFn = useRpc(removeWorktreeRpc);
   const toast = useToast();
   const styles = useStyles(theme, layout.compact);
-  const projects = useProjects(paseo);
+
+  const configuredHosts = useConfiguredHosts();
+  const installationHostId = host?.id ?? "";
+  const hostOptions = useMemo<readonly HostSummary[]>(() => {
+    if (configuredHosts.length > 0) return configuredHosts;
+    return [{ serverId: installationHostId, label: host?.label ?? "本机", status: "online" }];
+  }, [configuredHosts, installationHostId, host?.label]);
+  const [selectedHostId, setSelectedHostId] = useState(installationHostId);
+  const selectedHost =
+    hostOptions.find((option) => option.serverId === selectedHostId) ?? hostOptions[0];
+  const isLocalHost = selectedHost.serverId === installationHostId;
+  const hostReachable = isLocalHost || selectedHost.status === "online";
+
+  const getApi = useCallback((): PaseoApi => {
+    if (isLocalHost) return paseo;
+    const getHostClient = hostRuntime.getPaseoClient;
+    if (!getHostClient) throw new Error("当前 Paseo 版本不支持访问其它主机");
+    return getHostClient(selectedHost.serverId);
+  }, [isLocalHost, paseo, selectedHost.serverId]);
+  // Stable handle for modals; falls back to the local API when a remote host is offline
+  // (the modals are not rendered in that state).
+  const api = useMemo(() => {
+    try {
+      return getApi();
+    } catch {
+      return paseo;
+    }
+  }, [getApi, paseo]);
+
+  const projects = useProjects(getApi);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [nonce, setNonce] = useState(0);
   const [creatingPath, setCreatingPath] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
   const [removing, setRemoving] = useState<Worktree | null>(null);
   const openCreate = useCallback(() => setCreateOpen(true), []);
   const closeCreate = useCallback(() => setCreateOpen(false), []);
   const closeRemove = useCallback(() => setRemoving(null), []);
+  const openCreateWorkspace = useCallback(() => setCreateWorkspaceOpen(true), []);
+  const closeCreateWorkspace = useCallback(() => setCreateWorkspaceOpen(false), []);
 
   const project = useMemo(
     () => projects?.find((option) => option.projectId === projectId) ?? projects?.[0] ?? null,
     [projects, projectId],
   );
   const isGitProject = project?.kind === "git";
+
+  const backend = useMemo<WorktreeBackend>(
+    () =>
+      isLocalHost
+        ? createLocalBackend({
+            listWorktrees,
+            listBranches: listBranchesRpcFn,
+            createWorktree: createWorktreeRpcFn,
+            removeWorktree: removeWorktreeRpcFn,
+          })
+        : createRemoteBackend(() => getApi() as unknown as RemotePaseoApi),
+    [
+      isLocalHost,
+      getApi,
+      listWorktrees,
+      listBranchesRpcFn,
+      createWorktreeRpcFn,
+      removeWorktreeRpcFn,
+    ],
+  );
+
   const { worktrees, error } = useWorktrees(
-    listWorktrees,
-    isGitProject ? project.rootPath : null,
+    backend,
+    hostReachable && isGitProject ? project.rootPath : null,
     nonce,
   );
-  const workspaceIndex = useWorkspaceIndex(paseo, nonce);
+  const workspaceIndex = useWorkspaceIndex(getApi, nonce);
 
   const filteredWorktrees = useMemo(() => {
     if (!worktrees) return null;
@@ -810,24 +1340,34 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
 
   const refresh = useCallback(() => setNonce((value) => value + 1), []);
   const selectProject = useCallback((id: string) => setProjectId(id), []);
+  const selectHost = useCallback(
+    (serverId: string) => {
+      if (serverId === selectedHostId) return;
+      setSelectedHostId(serverId);
+      setProjectId(null);
+      setQuery("");
+      setNonce((value) => value + 1);
+    },
+    [selectedHostId],
+  );
   const openWorkspace = useCallback(
     (workspaceId: string) => {
-      navigation?.openWorkspace?.({ workspaceId });
+      navigation?.openWorkspace?.({ workspaceId, serverId: selectedHost.serverId });
     },
-    [navigation],
+    [navigation, selectedHost.serverId],
   );
   const createWorkspace = useCallback(
     async (worktree: Worktree) => {
       if (!project) return;
       setCreatingPath(worktree.path);
       try {
-        const workspace = await paseo.workspaces.create({
+        const workspace = await getApi().workspaces.create({
           title: worktree.branch ?? basename(worktree.path),
           source: { kind: "directory", path: worktree.path, projectId: project.projectId },
         });
         toast.show("workspace 已创建", { variant: "success" });
         refresh();
-        navigation?.openWorkspace?.({ workspaceId: workspace.id });
+        navigation?.openWorkspace?.({ workspaceId: workspace.id, serverId: selectedHost.serverId });
       } catch (failure) {
         toast.show(failure instanceof Error ? failure.message : String(failure), {
           variant: "error",
@@ -836,11 +1376,25 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
         setCreatingPath(null);
       }
     },
-    [paseo, project, navigation, toast, refresh],
+    [getApi, project, navigation, selectedHost.serverId, toast, refresh],
+  );
+
+  const handleWorkspaceCreated = useCallback(
+    (workspaceId: string) => {
+      refresh();
+      navigation?.openWorkspace?.({ workspaceId, serverId: selectedHost.serverId });
+    },
+    [navigation, selectedHost.serverId, refresh],
   );
 
   let body = <Text style={styles.mutedText}>正在加载…</Text>;
-  if (!projects) {
+  if (!hostReachable) {
+    body = (
+      <Text style={styles.mutedText}>
+        主机 {selectedHost.label} 未连接，请先在 Paseo 中连接该主机
+      </Text>
+    );
+  } else if (!projects) {
     body = <Text style={styles.mutedText}>正在加载…</Text>;
   } else if (projects.length === 0) {
     body = <Text style={styles.mutedText}>暂无项目，请先在 Paseo 中添加</Text>;
@@ -884,6 +1438,22 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
 
   return (
     <View style={styles.screen}>
+      {hostOptions.length > 1 ? (
+        <View style={styles.hostToolbar}>
+          <Text style={styles.toolbarLabel}>主机:</Text>
+          <ScrollView horizontal style={styles.chipsScroll} contentContainerStyle={styles.chips}>
+            {hostOptions.map((option) => (
+              <HostChip
+                key={option.serverId}
+                host={option}
+                selected={option.serverId === selectedHost.serverId}
+                onSelect={selectHost}
+                styles={styles}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
       <View style={styles.toolbar}>
         <Text style={styles.toolbarLabel}>项目:</Text>
         <ScrollView horizontal style={styles.chipsScroll} contentContainerStyle={styles.chips}>
@@ -897,14 +1467,24 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
             />
           ))}
         </ScrollView>
-        {isGitProject ? (
+        {isGitProject && hostReachable ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="新建 worktree"
             onPress={openCreate}
             style={styles.refreshButton}
           >
-            <Text style={styles.refreshText}>+ 新建</Text>
+            <Text style={styles.refreshText}>+ worktree</Text>
+          </Pressable>
+        ) : null}
+        {isGitProject && hostReachable ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="新建工作区（自定义分支与路径）"
+            onPress={openCreateWorkspace}
+            style={styles.refreshButton}
+          >
+            <Text style={styles.refreshText}>+ 工作区</Text>
           </Pressable>
         ) : null}
         <Pressable accessibilityRole="button" onPress={refresh} style={styles.refreshButton}>
@@ -920,10 +1500,18 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
           style={styles.searchInput}
         />
       </View>
+      {!isLocalHost ? (
+        <View style={styles.hintRow}>
+          <Text style={styles.hintText}>
+            远程主机：git 通过该主机上的临时终端执行，需要该项目在此主机上至少有一个 workspace。
+          </Text>
+        </View>
+      ) : null}
       {body}
-      {project && isGitProject ? (
+      {project && isGitProject && hostReachable ? (
         <CreateWorktreeModal
           open={createOpen}
+          backend={backend}
           repoRoot={project.rootPath}
           projectName={project.name}
           onClose={closeCreate}
@@ -931,9 +1519,22 @@ export function WorktreeSurface({ theme, layout, navigation }: PluginSurfaceProp
           styles={styles}
         />
       ) : null}
-      {project && isGitProject ? (
+      {project && isGitProject && hostReachable ? (
+        <CreateWorkspaceModal
+          open={createWorkspaceOpen}
+          api={api}
+          backend={backend}
+          repoRoot={project.rootPath}
+          project={project}
+          onClose={closeCreateWorkspace}
+          onCreated={handleWorkspaceCreated}
+          styles={styles}
+        />
+      ) : null}
+      {project && isGitProject && hostReachable ? (
         <RemoveWorktreeModal
           worktree={removing}
+          backend={backend}
           repoRoot={project.rootPath}
           onClose={closeRemove}
           onRemoved={refresh}

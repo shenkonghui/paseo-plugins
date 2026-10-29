@@ -2,43 +2,10 @@ import { execFile } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseWorktreePorcelain } from "../shared/porcelain";
 import type { Worktree } from "../shared/worktrees";
 
-const BRANCH_PREFIX = "refs/heads/";
-
-/** Parses `git worktree list --porcelain` output. The first block is the main worktree. */
-export function parseWorktreePorcelain(text: string): Worktree[] {
-  const worktrees: Worktree[] = [];
-  let current: Worktree | null = null;
-  const flush = () => {
-    if (current) worktrees.push(current);
-    current = null;
-  };
-  for (const line of text.split("\n")) {
-    if (line.startsWith("worktree ")) {
-      flush();
-      current = {
-        path: line.slice("worktree ".length),
-        branch: null,
-        head: null,
-        bare: false,
-        main: worktrees.length === 0,
-        mtimeMs: null,
-      };
-    } else if (current && line.startsWith("HEAD ")) {
-      current.head = line.slice("HEAD ".length);
-    } else if (current && line.startsWith("branch ")) {
-      const ref = line.slice("branch ".length);
-      current.branch = ref.startsWith(BRANCH_PREFIX) ? ref.slice(BRANCH_PREFIX.length) : ref;
-    } else if (current && line === "bare") {
-      current.bare = true;
-    } else if (current && line === "detached") {
-      current.branch = null;
-    }
-  }
-  flush();
-  return worktrees;
-}
+export { parseWorktreePorcelain };
 
 function runGit(repoRoot: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {

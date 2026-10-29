@@ -23,6 +23,22 @@ export function sanitizePathSegment(name: string): string {
   return name.trim().replace(/[\\/:*?"<>|\s]+/g, "_");
 }
 
+/**
+ * Mirrors the daemon's worktree slug rules so the UI can show the directory
+ * name a Paseo-managed worktree will actually get.
+ */
+export function slugifyWorktreeName(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (slug.length <= 50) return slug;
+  const truncated = slug.slice(0, 50);
+  const lastHyphen = truncated.lastIndexOf("-");
+  if (lastHyphen > 25) return truncated.slice(0, lastHyphen);
+  return truncated.replace(/-+$/, "");
+}
+
 export const worktreeBranchesRpc = defineRpc({
   name: "worktrees.branches",
   input: z.object({ repoRoot: z.string() }),
