@@ -6,6 +6,7 @@ import { Animated, Pressable, ScrollView, Text, View, type ViewStyle } from "rea
 import type { MultiTaskView } from "../shared/settings";
 import { EmbeddedAgent } from "./embedded-agent";
 import { EntryView } from "./entry-view";
+import { setFramesInteractive } from "./frame-pool";
 import { STATUS_LABELS, useAgentTimeline } from "./timeline";
 
 type Theme = PluginScreenProps["theme"];
@@ -52,6 +53,7 @@ interface PointerLike {
   button?: number;
   clientX?: number;
   clientY?: number;
+  pointerId?: number;
   preventDefault?(): void;
   stopPropagation?(): void;
 }
@@ -59,6 +61,8 @@ interface PointerLike {
 interface DomEventTarget {
   addEventListener(type: string, listener: (event: PointerLike) => void, capture?: boolean): void;
   removeEventListener(type: string, listener: (event: PointerLike) => void, capture?: boolean): void;
+  setPointerCapture?(pointerId: number): void;
+  releasePointerCapture?(pointerId: number): void;
 }
 
 export function statusColor(status: string | null, theme: Theme): string {
@@ -276,6 +280,7 @@ export function AgentPane({
     let startY = 0;
     let active = false;
     let moved = false;
+    let pointerId: number | null = null;
 
     const onMove = (event: PointerLike) => {
       if (!active) return;
@@ -297,7 +302,16 @@ export function AgentPane({
       globalTarget.removeEventListener("pointermove", onMove, true);
       globalTarget.removeEventListener("pointerup", finish, true);
       globalTarget.removeEventListener("pointercancel", finish, true);
+      if (pointerId != null) {
+        try {
+          grip.releasePointerCapture?.(pointerId);
+        } catch {
+          // 指针已被系统释放时再释放会抛错，忽略即可。
+        }
+        pointerId = null;
+      }
       dragStateRef.current?.(null);
+      setFramesInteractive(true);
       if (!moved) return;
       const dx = (event.clientX ?? 0) - startX;
       const dy = (event.clientY ?? 0) - startY;
@@ -312,11 +326,26 @@ export function AgentPane({
       event.stopPropagation?.();
       active = true;
       moved = false;
+      pointerId = event.pointerId ?? null;
       startX = event.clientX ?? 0;
       startY = event.clientY ?? 0;
+      // 捕获指针：拖出窗口再松手也能收到 pointerup（否则面板会永远停在偏移位置）。
+      // 指针落到内嵌 iframe 上的情况由外层拖动期间隐藏 iframe 解决——事件进了 iframe 文档，
+      // 父页面的捕获管不到。
+      if (pointerId != null) {
+        try {
+          grip.setPointerCapture?.(pointerId);
+        } catch {
+          // 拿不到捕获时退回普通拖拽（只在面板内有效）。
+        }
+      }
       globalTarget.addEventListener("pointermove", onMove, true);
       globalTarget.addEventListener("pointerup", finish, true);
       globalTarget.addEventListener("pointercancel", finish, true);
+      // 按下的瞬间就让常驻 iframe 不再接收指针事件：指针一旦落进 iframe 的独立文档，
+      // 父页面就收不到后续 pointermove / pointerup（拖动会卡住、松手也不换位）。
+      // 这里同步生效，不等 React 的下一次渲染——快速拖动时松手事件可能就在同一帧里发出来。
+      setFramesInteractive(false);
     };
 
     grip.addEventListener("pointerdown", onDown);
@@ -325,6 +354,7 @@ export function AgentPane({
       globalTarget.removeEventListener("pointermove", onMove, true);
       globalTarget.removeEventListener("pointerup", finish, true);
       globalTarget.removeEventListener("pointercancel", finish, true);
+      setFramesInteractive(true);
     };
   }, [dragXY]);
 

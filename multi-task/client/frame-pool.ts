@@ -96,6 +96,8 @@ const bindings = new Set<Binding>();
 const knownSources = new Set<string>();
 let rafId: number | null = null;
 let framesHidden = false;
+/** 面板手势（按住标题区拖动）中：常驻 iframe 一律不接收指针事件。 */
+let framesInteractive = true;
 
 let observer: ObserverLike | null = null;
 let globalListeners = 0;
@@ -270,7 +272,7 @@ function applyGeometry(binding: Binding, area: DomRectLike): void {
     ? "offscreen"
     : `${left},${top},${width},${height},${Math.round(visibleLeft - left)},${Math.round(
         visibleTop - top,
-      )},${Math.round(left + width - visibleRight)},${Math.round(top + height - visibleBottom)},${framesHidden}`;
+      )},${Math.round(left + width - visibleRight)},${Math.round(top + height - visibleBottom)},${framesHidden},${framesInteractive}`;
   if (entry.lastKey === key) return;
   entry.lastKey = key;
 
@@ -291,7 +293,7 @@ function applyGeometry(binding: Binding, area: DomRectLike): void {
   );
   style.setProperty("visibility", framesHidden ? "hidden" : "visible");
   style.setProperty("opacity", "1");
-  style.setProperty("pointer-events", framesHidden ? "none" : "auto");
+  style.setProperty("pointer-events", framesHidden || !framesInteractive ? "none" : "auto");
 }
 
 function syncAll(): void {
@@ -349,11 +351,6 @@ export function setKnownSources(sources: string[]): void {
   trimIdle();
 }
 
-/** 拖动排序 / 分隔条拖拽期间：位置在变但尺寸不变，需要连续同步。 */
-export function requestFrameSync(): void {
-  requestSync();
-}
-
 export function leaseFrame(input: {
   src: string;
   slot: DomElementLike;
@@ -389,7 +386,10 @@ export function leaseFrame(input: {
   entry.lastKey = "";
   entry.host.style.setProperty("visibility", "visible");
   entry.host.style.setProperty("opacity", "1");
-  entry.host.style.setProperty("pointer-events", framesHidden ? "none" : "auto");
+  entry.host.style.setProperty(
+    "pointer-events",
+    framesHidden || !framesInteractive ? "none" : "auto",
+  );
 
   // 尺寸变化（面板布局 / 窗口缩放）时重新对齐；位置变化靠 scroll/resize + 拖动时的显式同步。
   const resizeObserver = getObserver();
@@ -444,6 +444,27 @@ export function setFramesHidden(hidden: boolean): void {
   if (bindings.size > 0) requestSync();
 }
 
+/**
+ * 面板手势期间（按住标题区拖动）让常驻 iframe 不再接收指针事件。
+ *
+ * 只改 `pointer-events`、不动 `visibility`：画面不变，但指针不会再「掉进」iframe 的独立文档——
+ * 父页面因此能持续收到 pointermove / pointerup。指针掉进去的后果是松手事件丢失，
+ * 面板会卡在偏移位置、也不会换位。
+ *
+ * 直接写 style、不等下一帧：快速拖动时 pointerup 可能在同一帧内就发出来。
+ */
+export function setFramesInteractive(interactive: boolean): void {
+  if (framesInteractive === interactive) return;
+  framesInteractive = interactive;
+  for (const entry of entries) {
+    entry.lastKey = "";
+    entry.host.style.setProperty(
+      "pointer-events",
+      framesHidden || !framesInteractive ? "none" : "auto",
+    );
+  }
+}
+
 /** 插件卸载（disable / reload）时销毁所有常驻 iframe。 */
 export function disposeAllFrames(): void {
   if (rafId != null) {
@@ -454,5 +475,7 @@ export function disposeAllFrames(): void {
   observer = null;
   bindings.clear();
   knownSources.clear();
+  framesHidden = false;
+  framesInteractive = true;
   for (const entry of [...entries]) destroyEntry(entry);
 }

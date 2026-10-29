@@ -12,7 +12,7 @@ import {
   type MultiTaskView,
 } from "../shared/settings";
 import { AgentPane, statusColor, type AgentPaneInfo } from "./agent-pane";
-import { requestFrameSync, setFramesHidden, setKnownSources } from "./frame-pool";
+import { setFramesHidden, setKnownSources } from "./frame-pool";
 import { WorkspacePicker, workspaceLabel } from "./agent-picker";
 import { ResizeHandle } from "./resize-handle";
 
@@ -374,7 +374,11 @@ function slotSpans(sizes: number[], gap: number): SlotSpan[] {
   });
 }
 
-/** 找出坐标 value 落在第几个格子里（超出两端时夹到首 / 尾格）。 */
+/**
+ * 找出坐标 value 落在第几个格子里（超出两端时夹到首 / 尾格）。
+ * 格子之间有间隙，所以「进入相邻格」= 越过两个格子的边界线（不是相邻格的中线）：
+ * 面板中心越过边界即换位，拖半个面板宽度就能跟邻居互换。
+ */
 function slotIndexAt(spans: SlotSpan[], value: number): number {
   for (let index = 0; index < spans.length; index++) {
     if (value < (spans[index]?.end ?? 0)) return index;
@@ -665,10 +669,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     setKnownSources(knownFrameSources);
   }, [knownFrameSources]);
 
-  // 「已隐藏」下拉是界面内浮层，打开时先藏起常驻 iframe，免得它盖住菜单。
-  useEffect(() => {
-    setFramesHidden(hiddenMenuOpen);
-  }, [hiddenMenuOpen]);
+  // 「已隐藏」下拉是界面内浮层，打开时先藏起常驻 iframe，免得它盖住菜单（拖动排序同理，
+  // 见下面的 draggingPane）。
   useEffect(() => () => setFramesHidden(false), []);
 
   const setViewCollapsed = useCallback(
@@ -854,8 +856,8 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   }, [views, persist]);
 
   // 拖动落点：把面板从原位置的**中心**拖到哪儿，就落到那块格子。
-  // 之前用「整行宽度」当步长算，拖一格要拖半屏才生效；现在逐格比较边界，
-  // 拖过相邻面板的中线就换位（支持不同宽度 / 多行）。
+  // 逐格比较边界：面板中心越过格子边界（进入相邻格）即换位，拖半个面板宽度就能互换；
+  // 支持各行宽度不同 / 多行布局。
   const resolveDropTarget = useCallback(
     (viewId: string, dx: number, dy: number): MultiTaskView | null => {
       if (!grid || layoutRows.length === 0) return null;
@@ -889,12 +891,23 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
   );
 
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  // 是否有面板正在被拖动：拖动中要把常驻 iframe 全藏起来（原因见下面的 effect）。
+  const [draggingPane, setDraggingPane] = useState(false);
+
+  // 界面内浮层（「已隐藏」下拉、拖动中的面板）压不过 #overlay-root 里的常驻 iframe：
+  // 面板的祖先几乎都是 position: relative; z-index: 0，各自形成层叠上下文，面板自己的
+  // z-index 抬不出这层，而 iframe 在 overlay-root（z-index 1）里、整体高于界面内容。
+  // 结果就是指针落到 iframe 上——它是独立文档，捕获指针也收不到它的事件，拖动会卡死。
+  // 所以这些时候直接把 iframe 藏起来（visibility: hidden + pointer-events: none）。
+  useEffect(() => {
+    setFramesHidden(hiddenMenuOpen || draggingPane);
+  }, [hiddenMenuOpen, draggingPane]);
 
   // 拖动中实时高亮落点格：坐标没跨格就不写 state，避免每次 pointermove 都重渲染。
   const handleDragState = useCallback(
     (viewId: string, state: { dx: number; dy: number } | null) => {
-      // 拖动时面板在 translate，尺寸不变（不会触发 ResizeObserver），显式请求同步一次。
-      requestFrameSync();
+      // 值没变时 React 会跳过重渲染，不用自己判重。
+      setDraggingPane(state != null);
       if (!state) {
         setDropTargetId(null);
         return;
