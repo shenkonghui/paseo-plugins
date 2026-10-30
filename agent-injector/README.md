@@ -23,8 +23,14 @@
 | `ruleFiles` | 规则文件路径，每行一个，支持 `~`，按顺序拼接 |
 | `prependRules` | `true` 时规则块放在 `systemPrompt` 最前面，否则追加到末尾 |
 | `mcpServersJson` | MCP server 映射 JSON |
+| `subagentEnabled` / `subagentCreateTool` | 子代理工具总开关 / 是否暴露 `create_subagent` |
+| `subagentConfigMode` | `inherit` 继承父 agent，`custom` 按模型队列 |
+| `subagentModelQueue` | 队列 JSON 数组，按顺序取第一个可用项；元素可为 `{provider, model?, modeId?, thinkingOptionId?}` 或 `{"inherit": true}` |
+| `subagentFailureCooldownHours` | 队列项失败后的冷却时长（小时），默认 4，0 表示不跳过 |
 
 设置页还有一个 **内置工具** 区块，按 provider 控制 Paseo 自带工具（含浏览器工具）：可以整体开关，或在 41 个 paseo 工具 + 18 个浏览器工具的多选清单里勾选。清单按「系统 / 语音、工作区、Agent、终端、工作区脚本、日程 / 心跳、Provider / 模型、浏览器」分类，每个类别都有自己的全选 / 全不选，顶部另有全局全选 / 全不选。它写入 daemon 配置 `agents.providers.<providerId>.paseoTools = { enabled, disabledTools }`，不占用插件设置文件；单个禁用对 `speak` 无效，整体关闭时 `speak` 也会下线。改动在新建或重开会话后生效。
+
+**子代理队列**：会话打开时向模型注入 `create_subagent`，模型配置优先按队列取第一个可用项（provider 可用、模型存在），队列支持 `{"inherit": true}` 兜底项。某项创建失败，或由它创建的子 agent 首轮运行失败，会按 `subagentFailureCooldownHours` 进入冷却并被跳过，到期自动恢复；成功的子 agent 会清除该项的失败记录。设置页里当前会选中项标绿并注「当前」，冷却 / 不可用项显示原因与剩余时间；「失败记录」弹窗列出冷却中的项、失败时间与恢复倒计时，支持单项或全部手动重置。运行状态存放在 `~/.paseo/plugin-data/agent-injector/subagent-queue.json`，不影响设置文件。
 
 配置文件（也可直接编辑，改完新开 agent 即生效）：
 `~/.paseo/plugin-settings/agent-injector/injector.json`

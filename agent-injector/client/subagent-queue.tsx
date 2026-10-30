@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
-import { usePaseo, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Modal, SettingsAction, SettingsSelect } from "@getpaseo/plugin/client/ui";
 import {
   isInheritEntry,
@@ -8,6 +8,7 @@ import {
   type SubagentModelEntry,
   type SubagentQueueEntry,
 } from "../shared/settings";
+import { queueStatusRpc, resetQueueFailuresRpc } from "../shared/queue-status";
 
 type Theme = PluginSurfaceProps["theme"];
 
@@ -38,7 +39,38 @@ interface QueueRow {
   entry: SubagentQueueEntry;
 }
 
+type QueueEntryStatus = {
+  key: string;
+  state: "ready" | "cooldown" | "unavailable";
+  detail: string | null;
+  retryAt: number | null;
+  failedAt: number | null;
+};
+
+type QueueStatus = {
+  error: string | null;
+  activeIndex: number | null;
+  entries: QueueEntryStatus[];
+};
+
 const INHERIT_LABEL = "继承父 agent 配置";
+const STATUS_REFRESH_MS = 250;
+
+function formatRemaining(until: number): string {
+  const minutes = Math.max(1, Math.ceil((until - Date.now()) / 60_000));
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return hours > 0 ? `${hours}h${rest > 0 ? `${rest}m` : ""}` : `${rest}m`;
+}
+
+function formatTime(value: number | null): string {
+  if (!value) return "未知时间";
+  const date = new Date(value);
+  const pad = (part: number) => `${part}`.padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(
+    date.getMinutes(),
+  )}`;
+}
 
 let rowSeq = 0;
 
@@ -113,7 +145,10 @@ const styles = StyleSheet.create({
   handleText: { fontSize: 15, lineHeight: 18 },
   rank: { fontSize: 12, lineHeight: 16, minWidth: 14, textAlign: "center" },
   entry: { flex: 1, gap: 2 },
-  entryTitle: { fontSize: 13, lineHeight: 18 },
+  entryHeader: { flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 },
+  entryTitle: { fontSize: 13, lineHeight: 18, flexShrink: 1 },
+  activeDot: { width: 6, height: 6, borderRadius: 3 },
+  activeLabel: { fontSize: 11, lineHeight: 15 },
   entrySub: { fontSize: 11, lineHeight: 15 },
   action: {
     paddingHorizontal: 8,
@@ -125,6 +160,15 @@ const styles = StyleSheet.create({
   actionText: { fontSize: 14, lineHeight: 18 },
   empty: { paddingHorizontal: 16, paddingVertical: 10 },
   message: { paddingHorizontal: 16, paddingBottom: 12, fontSize: 12, lineHeight: 17 },
+  failedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  failedReset: { paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6 },
+  failedResetText: { fontSize: 13, lineHeight: 18 },
 });
 
 function QueueRowView({
@@ -134,6 +178,9 @@ function QueueRowView({
   theme,
   title,
   details,
+  active,
+  note,
+  noteTone,
   onMove,
   onRemove,
 }: {
@@ -143,6 +190,9 @@ function QueueRowView({
   theme: Theme;
   title: string;
   details: string[];
+  active: boolean;
+  note: string | null;
+  noteTone: "muted" | "danger";
   onMove(from: number, to: number): boolean;
   onRemove(index: number): void;
 }) {
@@ -207,12 +257,37 @@ function QueueRowView({
       )}
       <Text style={[styles.rank, { color: theme.colors.foregroundMuted }]}>{index + 1}</Text>
       <View style={styles.entry}>
-        <Text numberOfLines={1} style={[styles.entryTitle, { color: theme.colors.foreground }]}>
-          {title}
-        </Text>
-        {details.length > 0 ? (
-          <Text numberOfLines={1} style={[styles.entrySub, { color: theme.colors.foregroundMuted }]}>
-            {details.join(" · ")}
+        <View style={styles.entryHeader}>
+          {active ? (
+            <View style={[styles.activeDot, { backgroundColor: theme.colors.statusSuccess }]} />
+          ) : null}
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.entryTitle,
+              { color: active ? theme.colors.statusSuccess : theme.colors.foreground },
+            ]}
+          >
+            {title}
+          </Text>
+          {active ? (
+            <Text style={[styles.activeLabel, { color: theme.colors.statusSuccess }]}>当前</Text>
+          ) : null}
+        </View>
+        {details.length > 0 || note ? (
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.entrySub,
+              {
+                color:
+                  noteTone === "danger"
+                    ? theme.colors.statusDanger
+                    : theme.colors.foregroundMuted,
+              },
+            ]}
+          >
+            {(note ? [...details, note] : details).join(" · ")}
           </Text>
         ) : null}
       </View>
@@ -276,13 +351,19 @@ export function SubagentQueueEditor({
   onChange(text: string): void;
 }) {
   const paseo = usePaseo();
+  const rpc = useRpc(queueStatusRpc);
+  const resetRpc = useRpc(resetQueueFailuresRpc);
   const parsed = useMemo(() => parseSubagentQueue(value), [value]);
   const [rows, setRows] = useState<QueueRow[]>(() => toRows(parsed.entries));
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
+  const [status, setStatus] = useState<QueueStatus | null>(null);
+  const [statusVersion, setStatusVersion] = useState(0);
   const [providerId, setProviderId] = useState<string | null>(null);
   const [modelId, setModelId] = useState<string | null>(null);
   const [thinkingId, setThinkingId] = useState<string>("");
   const [adding, setAdding] = useState(false);
+  const [failedOpen, setFailedOpen] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
   const lastValue = useRef(value);
 
   useEffect(() => {
@@ -310,6 +391,53 @@ export function SubagentQueueEditor({
     const next = parseSubagentQueue(value);
     setRows(toRows(next.entries));
   }, [value]);
+
+  // 由服务端给出「当前会选中哪一项、哪些在冷却 / 不可用」，拖动或增删后重新计算。
+  useEffect(() => {
+    if (parsed.error) {
+      setStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void rpc({ entries: rows.map((row) => row.entry) })
+        .then((result) => {
+          if (!cancelled) setStatus(result);
+        })
+        .catch(() => {
+          if (!cancelled) setStatus(null);
+        });
+    }, STATUS_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [rows, parsed.error, rpc, statusVersion]);
+
+  // 当前队列里处于失败冷却中的项，供「失败记录」弹窗展示。
+  const coolingEntries = useMemo(() => {
+    if (!status || status.entries.length !== rows.length) return [];
+    const list: { row: QueueRow; index: number; entryStatus: QueueEntryStatus }[] = [];
+    rows.forEach((row, index) => {
+      const entryStatus = status.entries[index];
+      if (entryStatus?.state === "cooldown") list.push({ row, index, entryStatus });
+    });
+    return list;
+  }, [rows, status]);
+
+  const resetFailures = useCallback(
+    (keys?: string[]) => {
+      setResetError(null);
+      void resetRpc(keys ? { keys } : {})
+        .then(() => {
+          setStatusVersion((version) => version + 1);
+        })
+        .catch((error: unknown) => {
+          setResetError(errorText(error));
+        });
+    },
+    [resetRpc],
+  );
 
   const commit = useCallback(
     (next: QueueRow[]) => {
@@ -477,6 +605,17 @@ export function SubagentQueueEditor({
       ) : (
         rows.map((row, index) => {
           const { title, details } = describe(row.entry);
+          const entryStatus =
+            status && status.entries.length === rows.length ? status.entries[index] : undefined;
+          const active = Boolean(entryStatus) && status?.activeIndex === index;
+          let note: string | null = null;
+          let noteTone: "muted" | "danger" = "muted";
+          if (entryStatus?.state === "cooldown" && entryStatus.retryAt) {
+            note = `冷却中 · 剩余 ${formatRemaining(entryStatus.retryAt)}`;
+          } else if (entryStatus?.state === "unavailable") {
+            note = entryStatus.detail ? `不可用：${entryStatus.detail}` : "不可用";
+            noteTone = "danger";
+          }
           return (
             <QueueRowView
               key={row.id}
@@ -486,12 +625,35 @@ export function SubagentQueueEditor({
               theme={theme}
               title={title}
               details={details}
+              active={active}
+              note={note}
+              noteTone={noteTone}
               onMove={move}
               onRemove={remove}
             />
           );
         })
       )}
+      {status && rows.length > 0 && status.entries.length === rows.length && status.activeIndex === null ? (
+        <Text style={[styles.message, { color: theme.colors.foregroundMuted }]}>
+          当前没有可用项（冷却中或 provider 不可用），创建子代理时会回退到继承父 agent。
+        </Text>
+      ) : null}
+      {status?.error ? (
+        <Text style={[styles.message, { color: theme.colors.statusDanger }]}>
+          无法获取队列状态：{status.error}
+        </Text>
+      ) : null}
+      <SettingsAction
+        label="失败记录"
+        hint={
+          coolingEntries.length > 0
+            ? `${coolingEntries.length} 项失败冷却中，可查看失败时间并手动重置`
+            : "队列项创建失败、或子代理运行失败后会记录在这里"
+        }
+        actionLabel="查看"
+        onPress={() => setFailedOpen(true)}
+      />
       {editable ? (
         <SettingsAction
           label="添加队列项"
@@ -507,6 +669,58 @@ export function SubagentQueueEditor({
           onPress={() => commit([])}
         />
       ) : null}
+      <Modal title="失败记录" open={failedOpen} onOpenChange={setFailedOpen}>
+        <Modal.Content>
+          {coolingEntries.length === 0 ? (
+            <Text style={[styles.hint, { color: theme.colors.foregroundMuted }]}>
+              当前没有处于失败冷却中的队列项。
+            </Text>
+          ) : (
+            coolingEntries.map(({ row, index, entryStatus }) => (
+              <View key={row.id} style={styles.failedRow}>
+                <View style={styles.entry}>
+                  <Text
+                    numberOfLines={1}
+                    style={[styles.entryTitle, { color: theme.colors.foreground }]}
+                  >
+                    {index + 1}. {describe(row.entry).title}
+                  </Text>
+                  <Text style={[styles.entrySub, { color: theme.colors.foregroundMuted }]}>
+                    失败于 {formatTime(entryStatus.failedAt)}
+                    {entryStatus.retryAt
+                      ? ` · ${formatRemaining(entryStatus.retryAt)} 后自动恢复`
+                      : ""}
+                  </Text>
+                </View>
+                {editable ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`重置第 ${index + 1} 项的失败记录`}
+                    onPress={() => resetFailures([entryStatus.key])}
+                    style={styles.failedReset}
+                  >
+                    <Text style={[styles.failedResetText, { color: theme.colors.accent }]}>
+                      重置
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ))
+          )}
+          <SettingsAction
+            label="重置全部失败记录"
+            hint="清除后队列立即恢复按顺序选择，对已移出队列的项同样生效"
+            actionLabel="重置"
+            disabled={!editable}
+            onPress={() => resetFailures()}
+          />
+          {resetError ? (
+            <Text style={[styles.message, { color: theme.colors.statusDanger }]}>
+              重置失败：{resetError}
+            </Text>
+          ) : null}
+        </Modal.Content>
+      </Modal>
       <Modal title="添加模型队列项" open={adding} onOpenChange={setAdding}>
         <Modal.Content>
           <SettingsAction

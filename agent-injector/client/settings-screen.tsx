@@ -41,6 +41,13 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     textAlignVertical: "top",
   },
+  inputSingle: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+  },
   message: { fontSize: 12, lineHeight: 17 },
   messageRow: { paddingHorizontal: 16, paddingBottom: 12 },
   screen: { flex: 1 },
@@ -87,6 +94,58 @@ function TextArea(props: {
           autoCorrect={false}
           spellCheck={false}
           onChangeText={onChangeText}
+          style={inputStyle}
+        />
+      </View>
+    </View>
+  );
+}
+
+function NumberField(props: {
+  label: string;
+  hint?: string;
+  value: number;
+  min: number;
+  max: number;
+  editable: boolean;
+  onChange(value: number): void;
+  theme: PluginSurfaceProps["theme"];
+}) {
+  const { label, hint, value, min, max, editable, onChange, theme } = props;
+  const [text, setText] = useState(String(value));
+  // 外部值变化（撤销 / 其他客户端保存）时同步输入框，但不打断正在输入的内容。
+  useEffect(() => {
+    setText((current) => (Number.parseInt(current, 10) === value ? current : String(value)));
+  }, [value]);
+  const inputStyle = useMemo(
+    () => [
+      styles.inputSingle,
+      {
+        color: theme.colors.foreground,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface2,
+        opacity: editable ? 1 : 0.55,
+      },
+    ],
+    [theme, editable],
+  );
+  return (
+    <View style={styles.row}>
+      <View style={styles.field}>
+        <Text style={[styles.label, { color: theme.colors.foreground }]}>{label}</Text>
+        {hint ? (
+          <Text style={[styles.hint, { color: theme.colors.foregroundMuted }]}>{hint}</Text>
+        ) : null}
+        <TextInput
+          accessibilityLabel={label}
+          value={text}
+          editable={editable}
+          keyboardType="numeric"
+          onChangeText={(next) => {
+            setText(next);
+            const parsed = Number.parseInt(next, 10);
+            if (Number.isFinite(parsed)) onChange(Math.min(max, Math.max(min, parsed)));
+          }}
           style={inputStyle}
         />
       </View>
@@ -289,12 +348,24 @@ function Editor({
             onValueChange={(value) => update("subagentConfigMode", value)}
           />
           {draft.values.subagentConfigMode === "custom" ? (
-            <SubagentQueueEditor
-              value={draft.values.subagentModelQueue}
-              editable={!disabled && draft.values.enabled && draft.values.subagentEnabled}
-              theme={theme}
-              onChange={(text) => update("subagentModelQueue", text)}
-            />
+            <>
+              <SubagentQueueEditor
+                value={draft.values.subagentModelQueue}
+                editable={!disabled && draft.values.enabled && draft.values.subagentEnabled}
+                theme={theme}
+                onChange={(text) => update("subagentModelQueue", text)}
+              />
+              <NumberField
+                label="失败重置时间（小时）"
+                hint="队列项创建失败或子代理运行失败后暂时跳过，到期自动恢复；0 表示不跳过"
+                value={draft.values.subagentFailureCooldownHours}
+                min={0}
+                max={720}
+                editable={!disabled}
+                onChange={(value) => update("subagentFailureCooldownHours", value)}
+                theme={theme}
+              />
+            </>
           ) : (
             <StatusMessage
               text="当前继承父 agent；队列配置会保留但不生效。"

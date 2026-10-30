@@ -8,6 +8,8 @@ import {
   type InjectorValues,
   type SubagentQueueEntry,
 } from "../shared/settings";
+import { queueEntryKey } from "../shared/queue-status";
+import { cooldownUntil, markEntryFailed, markPendingAgent } from "./queue-state";
 
 type ChildConfig = {
   provider: string;
@@ -88,20 +90,112 @@ async function resolveInheritedConfig(paseo: PaseoApi, parent: PaseoAgent): Prom
   return { ...inherited, thinkingOptionId };
 }
 
-async function resolveQueueEntry(
+export type QueueEntryStatus = "ready" | "cooldown" | "unavailable";
+
+export type QueueEntryEvaluation = {
+  index: number;
+  key: string;
+  state: QueueEntryStatus;
+  detail: string | null;
+  retryAt: number | null;
+  /** 最近一次失败时间；仅冷却中的项有值。 */
+  failedAt: number | null;
+  source: ConfigSource;
+  /** 仅在 state === "ready" 时有值；设置页查询状态（parent 为 null）时为 null。 */
+  config: ChildConfig | null;
+};
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 逐项评估队列：冷却中的项直接跳过；其余按 provider 可用性与模型是否存在判断。
+ */
+export async function evaluateQueue(
   paseo: PaseoApi,
-  parent: PaseoAgent,
-  entries: SubagentQueueEntry[],
-  availableProviders: Set<string>,
-): Promise<{ config: ChildConfig; source: ConfigSource } | null> {
-  for (const entry of entries) {
-    if (isInheritEntry(entry)) {
-      return { config: await resolveInheritedConfig(paseo, parent), source: "inherit" };
+  parent: PaseoAgent | null,
+  entries: readonly SubagentQueueEntry[],
+  options: { cooldownHours: number; now?: number },
+): Promise<QueueEntryEvaluation[]> {
+  const now = options.now ?? Date.now();
+
+  let available: Set<string> | null = null;
+  let availabilityError: string | null = null;
+  try {
+    const result = await paseo.providers.listAvailable();
+    available = new Set(
+      result.providers.filter((entry) => entry.available).map((entry) => entry.provider),
+    );
+  } catch (error) {
+    availabilityError = `获取 provider 可用状态失败：${errorMessage(error)}`;
+  }
+
+  const evaluations: QueueEntryEvaluation[] = [];
+
+  for (const [index, entry] of entries.entries()) {
+    const key = queueEntryKey(entry);
+    const source: ConfigSource = isInheritEntry(entry) ? "inherit" : "custom";
+    const retryAt = cooldownUntil(key, options.cooldownHours, now);
+    if (retryAt) {
+      evaluations.push({
+        index,
+        key,
+        state: "cooldown",
+        detail: null,
+        retryAt,
+        failedAt: retryAt - options.cooldownHours * 3_600_000,
+        source,
+        config: null,
+      });
+      continue;
     }
+
+    if (isInheritEntry(entry)) {
+      const config = parent ? await resolveInheritedConfig(paseo, parent) : null;
+      evaluations.push({
+        index,
+        key,
+        state: "ready",
+        detail: parent ? null : "创建时读取父 agent 的实时配置",
+        retryAt: null,
+        failedAt: null,
+        source,
+        config,
+      });
+      continue;
+    }
+
     const parsed = splitProviderModel(entry.provider);
     const providerId = parsed.provider;
     const modelId = entry.model ?? parsed.model;
-    if (!availableProviders.has(providerId)) continue;
+
+    if (!available) {
+      evaluations.push({
+        index,
+        key,
+        state: "unavailable",
+        detail: availabilityError ?? "无法获取 provider 可用状态",
+        retryAt: null,
+        failedAt: null,
+        source,
+        config: null,
+      });
+      continue;
+    }
+    if (!available.has(providerId)) {
+      evaluations.push({
+        index,
+        key,
+        state: "unavailable",
+        detail: "provider 当前不可用",
+        retryAt: null,
+        failedAt: null,
+        source,
+        config: null,
+      });
+      continue;
+    }
 
     let model: string | undefined;
     if (modelId) {
@@ -110,9 +204,31 @@ async function resolveQueueEntry(
         const found = result.models?.find(
           (candidate) => candidate.id === modelId && candidate.isSelectable !== false,
         );
-        if (!found) continue;
+        if (!found) {
+          evaluations.push({
+            index,
+            key,
+            state: "unavailable",
+            detail: "模型不存在或不可选",
+            retryAt: null,
+            failedAt: null,
+            source,
+            config: null,
+          });
+          continue;
+        }
         model = found.id;
-      } catch {
+      } catch (error) {
+        evaluations.push({
+          index,
+          key,
+          state: "unavailable",
+          detail: `查询模型失败：${errorMessage(error)}`,
+          retryAt: null,
+          failedAt: null,
+          source,
+          config: null,
+        });
         continue;
       }
     }
@@ -124,16 +240,45 @@ async function resolveQueueEntry(
       entry.thinkingOptionId,
     );
 
-    return {
+    evaluations.push({
+      index,
+      key,
+      state: "ready",
+      detail: null,
+      retryAt: null,
+      failedAt: null,
+      source,
       config: {
         provider: model ? `${providerId}/${model}` : providerId,
         modeId: entry.modeId,
         thinkingOptionId,
       },
-      source: "custom",
-    };
+    });
   }
-  return null;
+
+  return evaluations;
+}
+
+async function resolveQueueEntry(
+  paseo: PaseoApi,
+  parent: PaseoAgent,
+  entries: SubagentQueueEntry[],
+  cooldownHours: number,
+): Promise<{
+  config: ChildConfig;
+  source: ConfigSource;
+  key: string;
+  skipped: number;
+} | null> {
+  const evaluations = await evaluateQueue(paseo, parent, entries, { cooldownHours });
+  const picked = evaluations.find((entry) => entry.state === "ready" && entry.config);
+  if (!picked?.config) return null;
+  return {
+    config: picked.config,
+    source: picked.source,
+    key: picked.key,
+    skipped: evaluations.filter((entry) => entry.state !== "ready").length,
+  };
 }
 
 async function resolveChildConfig(
@@ -141,18 +286,25 @@ async function resolveChildConfig(
   parent: PaseoAgent,
   values: InjectorValues,
   requestedMode: "inherit" | "custom" | undefined,
-): Promise<{ config: ChildConfig; source: ConfigSource }> {
+): Promise<{
+  config: ChildConfig;
+  source: ConfigSource;
+  /** 命中队列项的 key；继承兜底时为 null，不参与失败冷却。 */
+  key: string | null;
+  skipped: number;
+}> {
   const mode = requestedMode ?? values.subagentConfigMode;
 
   if (mode === "custom") {
     const { entries } = parseSubagentQueue(values.subagentModelQueue);
     if (entries.length > 0) {
       try {
-        const availability = await paseo.providers.listAvailable();
-        const available = new Set(
-          availability.providers.filter((entry) => entry.available).map((entry) => entry.provider),
+        const picked = await resolveQueueEntry(
+          paseo,
+          parent,
+          entries,
+          values.subagentFailureCooldownHours,
         );
-        const picked = await resolveQueueEntry(paseo, parent, entries, available);
         if (picked) return picked;
       } catch {
         // 队列解析失败时退回继承
@@ -160,7 +312,12 @@ async function resolveChildConfig(
     }
   }
 
-  return { config: await resolveInheritedConfig(paseo, parent), source: "inherit" };
+  return {
+    config: await resolveInheritedConfig(paseo, parent),
+    source: "inherit",
+    key: null,
+    skipped: 0,
+  };
 }
 
 export function createSubagentTool(values: InjectorValues) {
@@ -180,7 +337,7 @@ export function createSubagentTool(values: InjectorValues) {
         return { text: `找不到父 agent ${context.agent.id} 的当前配置`, isError: true };
       }
 
-      const { config, source } = await resolveChildConfig(
+      const { config, source, key, skipped } = await resolveChildConfig(
         context.paseo,
         parent,
         values,
@@ -206,12 +363,15 @@ export function createSubagentTool(values: InjectorValues) {
           prompt: input.prompt,
           config,
         });
+        if (key) markPendingAgent(child.id, key);
         const sourceLabel = source === "custom" ? "自定义队列" : "继承父 agent";
         return {
           text:
             `已创建子 agent ${child.id}（配置来源：${sourceLabel}，provider=${config.provider}` +
             (config.thinkingOptionId ? `，thinking=${config.thinkingOptionId}` : "") +
-            "）。完成/出错/需要权限时会给你通知，不要轮询。",
+            (skipped > 0 ? `，已跳过 ${skipped} 项冷却中或不可用的配置` : "") +
+            "）。完成或失败不会主动通知你，用 get_agent_status / get_agent_activity 查看进度；" +
+            "失败会自动把该队列项冷却一段时间。",
           structuredContent: {
             agentId: child.id,
             provider: config.provider,
@@ -220,7 +380,11 @@ export function createSubagentTool(values: InjectorValues) {
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return { text: `创建子 agent 失败：${message}`, isError: true };
+        if (key) markEntryFailed(key);
+        return {
+          text: `创建子 agent 失败：${message}` + (key ? "（该队列项已进入失败冷却）" : ""),
+          isError: true,
+        };
       }
     },
   });

@@ -87,6 +87,8 @@ export const injectorSettings = defineSettings({
     subagentConfigMode: z.enum(SUBAGENT_CONFIG_MODES).default("inherit"),
     /** 自定义队列 JSON（数组，按优先级从上到下） */
     subagentModelQueue: z.string().default("[]"),
+    /** 队列项失败后的冷却时长（小时）；0 表示失败后不跳过 */
+    subagentFailureCooldownHours: z.number().min(0).max(720).default(4),
   }),
 });
 

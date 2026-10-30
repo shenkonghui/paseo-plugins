@@ -329,7 +329,8 @@ function PolicyEditor({
 export function BuiltinToolsSection({ theme }: { theme: Theme }) {
   const paseo = usePaseo();
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 默认进入「全部 Provider」：统一编辑是主路径；单 provider 选择只在本次打开期间保留。
+  const [selectedId, setSelectedId] = useState<string | null>(ALL_PROVIDERS);
   const [baseline, setBaseline] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -342,10 +343,9 @@ export function BuiltinToolsSection({ theme }: { theme: Theme }) {
       Object.fromEntries(providers.map((entry) => [entry.id, policyKey(entry.policy)])),
     );
     setSelectedId((current) =>
-      current === ALL_PROVIDERS ||
-      (current && providers.some((entry) => entry.id === current))
+      current === ALL_PROVIDERS || (current && providers.some((entry) => entry.id === current))
         ? current
-        : (providers[0]?.id ?? null),
+        : ALL_PROVIDERS,
     );
   }, []);
 
