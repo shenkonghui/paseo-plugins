@@ -1,7 +1,7 @@
 {
   "id": "agent-injector",
-  "description": "为每个新建 agent 注入全局规则(systemPrompt)与额外 MCP server",
+  "description": "Agent 扩展：为新建 agent 注入全局规则(systemPrompt)、额外 MCP server 与子代理工具，并可按 provider 开关内置工具",
   "requirements": {
-    "paseo": ">=0.11.1"
+    "paseo": ">=0.14.0"
   }
 }

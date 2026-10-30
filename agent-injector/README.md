@@ -7,9 +7,9 @@
 
 配置在 Paseo 应用里，三种入口任选：
 
-- **左侧菜单栏「Agent 注入」**（位于 Workspaces 上方）→ 打开全屏配置页
+- **左侧菜单栏「Agent 扩展」**（位于 Workspaces 上方）→ 打开全屏配置页
 - **Settings → Plugins → agent-injector**
-- **Command Center**「配置全局 agent 注入」
+- **Command Center**「配置 Agent 扩展」
 
 ---
 
@@ -23,6 +23,8 @@
 | `ruleFiles` | 规则文件路径，每行一个，支持 `~`，按顺序拼接 |
 | `prependRules` | `true` 时规则块放在 `systemPrompt` 最前面，否则追加到末尾 |
 | `mcpServersJson` | MCP server 映射 JSON |
+
+设置页还有一个 **内置工具** 区块，按 provider 控制 Paseo 自带工具（含浏览器工具）：可以整体开关，或在 41 个 paseo 工具 + 18 个浏览器工具的多选清单里勾选。清单按「系统 / 语音、工作区、Agent、终端、工作区脚本、日程 / 心跳、Provider / 模型、浏览器」分类，每个类别都有自己的全选 / 全不选，顶部另有全局全选 / 全不选。它写入 daemon 配置 `agents.providers.<providerId>.paseoTools = { enabled, disabledTools }`，不占用插件设置文件；单个禁用对 `speak` 无效，整体关闭时 `speak` 也会下线。改动在新建或重开会话后生效。
 
 配置文件（也可直接编辑，改完新开 agent 即生效）：
 `~/.paseo/plugin-settings/agent-injector/injector.json`

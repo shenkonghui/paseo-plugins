@@ -6,7 +6,7 @@ export function InjectorSidebarItem({ currentScreen, openScreen }: PluginSidebar
   return (
     <SidebarRow
       icon="Wand2"
-      label="Agent 注入"
+      label="Agent 扩展"
       active={currentScreen?.screenId === "injector"}
       onPress={() => openScreen({ screenId: "injector" })}
     />

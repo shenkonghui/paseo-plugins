@@ -5,60 +5,116 @@ import {
   type PluginSurfaceProps,
   type SettingsState,
 } from "@getpaseo/plugin/client";
-import { TextInput } from "@getpaseo/plugin/client/react-native";
 import {
+  ScrollView,
   SettingsAction,
   SettingsCard,
   SettingsSection,
+  SettingsSelect,
   SettingsSwitch,
+  TextInput,
 } from "@getpaseo/plugin/client/ui";
-import { injectorSettings, mcpServersSchema, unwrapMcpServers, type InjectorValues } from "../shared/settings";
+import {
+  injectorSettings,
+  mcpServersSchema,
+  unwrapMcpServers,
+  type InjectorValues,
+} from "../shared/settings";
+import { BuiltinToolsSection } from "./builtin-tools";
+import { SubagentQueueEditor } from "./subagent-queue";
 
 type ReadySettings = Extract<SettingsState<typeof injectorSettings.schema>, { status: "ready" }>;
 
 const styles = StyleSheet.create({
-  field: { gap: 6 },
-  label: { fontSize: 13 },
+  /** 与 SettingsRow 的行内边距对齐（16px），否则自定义控件会贴住卡片左边缘。 */
+  row: { paddingHorizontal: 16, paddingVertical: 12 },
+  field: { gap: 8 },
+  label: { fontSize: 14, lineHeight: 20 },
+  hint: { fontSize: 12, lineHeight: 17 },
   input: {
-    minHeight: 96,
+    minHeight: 88,
     borderWidth: 1,
     borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13,
+    lineHeight: 19,
     textAlignVertical: "top",
   },
-  message: { fontSize: 12 },
+  message: { fontSize: 12, lineHeight: 17 },
+  messageRow: { paddingHorizontal: 16, paddingBottom: 12 },
+  screen: { flex: 1 },
+  screenContent: { padding: 16, paddingBottom: 32 },
 });
 
 function TextArea(props: {
   label: string;
+  hint?: string;
   value: string;
   placeholder?: string;
   editable: boolean;
   onChangeText(text: string): void;
   theme: PluginSurfaceProps["theme"];
 }) {
-  const { theme, label, value, placeholder, editable, onChangeText } = props;
+  const { theme, label, hint, value, placeholder, editable, onChangeText } = props;
   const inputStyle = useMemo(
-    () => [styles.input, { color: theme.colors.foreground, borderColor: theme.colors.border }],
-    [theme],
+    () => [
+      styles.input,
+      {
+        color: theme.colors.foreground,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface2,
+        opacity: editable ? 1 : 0.55,
+      },
+    ],
+    [theme, editable],
   );
   return (
-    <View style={styles.field}>
-      <Text style={[styles.label, { color: theme.colors.foreground }]}>{label}</Text>
-      <TextInput
-        accessibilityLabel={label}
-        multiline
-        value={value}
-        placeholder={placeholder}
-        placeholderTextColor={theme.colors.foregroundMuted}
-        editable={editable}
-        autoCapitalize="none"
-        autoCorrect={false}
-        spellCheck={false}
-        onChangeText={onChangeText}
-        style={inputStyle}
-      />
+    <View style={styles.row}>
+      <View style={styles.field}>
+        <Text style={[styles.label, { color: theme.colors.foreground }]}>{label}</Text>
+        {hint ? (
+          <Text style={[styles.hint, { color: theme.colors.foregroundMuted }]}>{hint}</Text>
+        ) : null}
+        <TextInput
+          accessibilityLabel={label}
+          multiline
+          value={value}
+          placeholder={placeholder}
+          placeholderTextColor={theme.colors.foregroundMuted}
+          editable={editable}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+          onChangeText={onChangeText}
+          style={inputStyle}
+        />
+      </View>
+    </View>
+  );
+}
+
+function StatusMessage({
+  text,
+  tone = "muted",
+  theme,
+}: {
+  text: string;
+  tone?: "muted" | "danger";
+  theme: PluginSurfaceProps["theme"];
+}) {
+  return (
+    <View style={styles.messageRow}>
+      <Text
+        style={[
+          styles.message,
+          {
+            color: tone === "danger" ? theme.colors.statusDanger : theme.colors.foregroundMuted,
+          },
+        ]}
+      >
+        {text}
+      </Text>
     </View>
   );
 }
@@ -122,11 +178,12 @@ function Editor({
   const disabled = settings.saving;
 
   return (
-    <View style={styles.field}>
+    <View>
       <SettingsSection title="总开关">
         <SettingsCard>
           <SettingsSwitch
-            label="启用注入"
+            label="启用扩展"
+            hint="关闭后不再注入全局规则、MCP server 与子代理工具"
             value={draft.values.enabled}
             disabled={disabled}
             onValueChange={(value) => update("enabled", value)}
@@ -137,7 +194,8 @@ function Editor({
       <SettingsSection title="生效范围">
         <SettingsCard>
           <TextArea
-            label="Provider 白名单（留空 = 全部）"
+            label="Provider 白名单"
+            hint="留空表示对所有 provider 生效；多个用逗号或换行分隔"
             value={draft.values.providers}
             placeholder="codex, claude, pi"
             editable={!disabled}
@@ -151,6 +209,7 @@ function Editor({
         <SettingsCard>
           <TextArea
             label="内联规则（markdown）"
+            hint="写入新 agent 的 systemPrompt"
             value={draft.values.rules}
             placeholder="例如：始终用中文回复；改动前先跑测试。"
             editable={!disabled}
@@ -159,12 +218,14 @@ function Editor({
           />
           <SettingsSwitch
             label="规则放在 systemPrompt 最前面"
+            hint="关闭时追加到末尾"
             value={draft.values.prependRules}
             disabled={disabled}
             onValueChange={(value) => update("prependRules", value)}
           />
           <TextArea
-            label="规则文件（每行一个，支持 ~）"
+            label="规则文件"
+            hint="每行一个路径，支持 ~；按顺序拼接"
             value={draft.values.ruleFiles}
             placeholder="~/.paseo/global-rules.md"
             editable={!disabled}
@@ -177,23 +238,77 @@ function Editor({
       <SettingsSection title="MCP Servers">
         <SettingsCard>
           <TextArea
-            label="MCP server 配置（JSON，可直接粘贴含 mcpServers 的片段）"
+            label="MCP server 配置（JSON）"
+            hint="可直接粘贴含 mcpServers 的片段，创建 agent 时合并进 mcpServers"
             value={draft.values.mcpServersJson}
             placeholder={'{\n  "company": { "type": "http", "url": "https://tools.example.com/mcp" }\n}'}
             editable={!disabled}
             onChangeText={(text) => update("mcpServersJson", text)}
             theme={theme}
           />
-          <Text
-            style={[
-              styles.message,
-              { color: mcpState.error ? theme.colors.statusDanger : theme.colors.foregroundMuted },
-            ]}
-          >
-            {mcpState.error ? `配置错误：${mcpState.error}` : `已配置 ${mcpState.count} 个 MCP server`}
-          </Text>
+          <StatusMessage
+            text={
+              mcpState.error
+                ? `配置错误：${mcpState.error}`
+                : `已配置 ${mcpState.count} 个 MCP server`
+            }
+            tone={mcpState.error ? "danger" : "muted"}
+            theme={theme}
+          />
         </SettingsCard>
       </SettingsSection>
+
+      <SettingsSection
+        title="子代理工具"
+        info="会话打开时向模型注入 create_subagent，让 agent 自行派生子代理：默认继承父 agent 的配置，也可按模型队列选择。opencode provider 走 bridge，暂不暴露插件注入的工具。"
+      >
+        <SettingsCard>
+          <SettingsSwitch
+            label="启用子代理工具"
+            hint="在 agent 会话打开时注入 create_subagent"
+            value={draft.values.subagentEnabled}
+            disabled={disabled || !draft.values.enabled}
+            onValueChange={(value) => update("subagentEnabled", value)}
+          />
+          <SettingsSwitch
+            label="create_subagent"
+            hint="让 agent 自行派生子代理，默认继承自己的配置"
+            value={draft.values.subagentCreateTool}
+            disabled={disabled || !draft.values.enabled || !draft.values.subagentEnabled}
+            onValueChange={(value) => update("subagentCreateTool", value)}
+          />
+          <SettingsSelect
+            label="新建子代理的默认配置"
+            hint="继承 = 复用父 agent 的 provider/model/mode/thinking；自定义 = 按下方队列（可拖动排序）取第一个可用项"
+            value={draft.values.subagentConfigMode}
+            options={[
+              { label: "继承父 agent", value: "inherit" },
+              { label: "自定义模型队列", value: "custom" },
+            ]}
+            disabled={disabled || !draft.values.enabled || !draft.values.subagentEnabled}
+            onValueChange={(value) => update("subagentConfigMode", value)}
+          />
+          {draft.values.subagentConfigMode === "custom" ? (
+            <SubagentQueueEditor
+              value={draft.values.subagentModelQueue}
+              editable={!disabled && draft.values.enabled && draft.values.subagentEnabled}
+              theme={theme}
+              onChange={(text) => update("subagentModelQueue", text)}
+            />
+          ) : (
+            <StatusMessage
+              text="当前继承父 agent；队列配置会保留但不生效。"
+              theme={theme}
+            />
+          )}
+          <StatusMessage
+            text="工具在会话打开时注入；修改后对新建 agent 生效，已运行的 agent 需 reload 或重开。"
+            theme={theme}
+          />
+        </SettingsCard>
+      </SettingsSection>
+
+      <BuiltinToolsSection theme={theme} />
 
       <SettingsCard>
         <SettingsAction
@@ -211,9 +326,7 @@ function Editor({
       </SettingsCard>
 
       {settings.saveError ? (
-        <Text style={[styles.message, { color: theme.colors.statusDanger }]}>
-          {settings.saveError}
-        </Text>
+        <StatusMessage text={settings.saveError} tone="danger" theme={theme} />
       ) : null}
     </View>
   );
@@ -226,9 +339,11 @@ export function InjectorSettingsScreen({ theme }: PluginSurfaceProps) {
   if (settings.status === "loading") return <Text style={mutedStyle}>加载中…</Text>;
   if (settings.status !== "ready") {
     return (
-      <SettingsSection title="Agent 注入">
+      <SettingsSection title="Agent 扩展">
         <SettingsCard>
-          <Text style={mutedStyle}>{settings.error}</Text>
+          <View style={styles.row}>
+            <Text style={[styles.message, mutedStyle]}>{settings.error}</Text>
+          </View>
           <SettingsAction label="重新读取" actionLabel="重试" onPress={settings.reload} />
           {settings.status === "invalid" ? (
             <SettingsAction label="恢复默认配置" actionLabel="重置" onPress={settings.reset} />
@@ -238,4 +353,13 @@ export function InjectorSettingsScreen({ theme }: PluginSurfaceProps) {
     );
   }
   return <Editor settings={settings} theme={theme} />;
+}
+
+/** 左侧菜单打开的全屏页：宿主不提供 padding 和滚动容器，这里自己补上。 */
+export function InjectorScreen({ theme, layout, host }: PluginSurfaceProps) {
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={styles.screenContent}>
+      <InjectorSettingsScreen theme={theme} layout={layout} host={host} />
+    </ScrollView>
+  );
 }

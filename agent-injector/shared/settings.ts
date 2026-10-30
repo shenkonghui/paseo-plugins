@@ -29,6 +29,39 @@ export const mcpServerConfigSchema = z.discriminatedUnion("type", [
 
 export const mcpServersSchema = z.record(z.string(), mcpServerConfigSchema);
 
+/**
+ * 自定义子代理模型队列的一项。provider 可以是 `provider` 或 `provider/model`；
+ * 队列按数组顺序作为优先级，创建子代理时取第一个可用的组合。
+ */
+export const subagentModelEntrySchema = z.object({
+  provider: z.string().trim().min(1),
+  model: z.string().trim().min(1).optional(),
+  modeId: z.string().trim().min(1).optional(),
+  thinkingOptionId: z.string().trim().min(1).optional(),
+});
+
+/** 队列里显式选择「继承父 agent 配置」的一项。 */
+export const subagentInheritEntrySchema = z.object({
+  inherit: z.literal(true),
+});
+
+export const subagentQueueEntrySchema = z.union([
+  subagentInheritEntrySchema,
+  subagentModelEntrySchema,
+]);
+
+export const subagentModelQueueSchema = z.array(subagentQueueEntrySchema);
+
+export type SubagentModelEntry = z.infer<typeof subagentModelEntrySchema>;
+export type SubagentInheritEntry = z.infer<typeof subagentInheritEntrySchema>;
+export type SubagentQueueEntry = SubagentModelEntry | SubagentInheritEntry;
+
+export function isInheritEntry(entry: SubagentQueueEntry): entry is SubagentInheritEntry {
+  return "inherit" in entry && entry.inherit === true;
+}
+
+export const SUBAGENT_CONFIG_MODES = ["inherit", "custom"] as const;
+
 export const injectorSettings = defineSettings({
   id: "injector",
   scope: "host",
@@ -46,10 +79,43 @@ export const injectorSettings = defineSettings({
     mcpServersJson: z.string().default("{}"),
     /** true 表示把规则块放到 systemPrompt 最前面，false 追加到末尾 */
     prependRules: z.boolean().default(false),
+    /** 子代理工具总开关 */
+    subagentEnabled: z.boolean().default(true),
+    /** 是否暴露 create_subagent 工具 */
+    subagentCreateTool: z.boolean().default(true),
+    /** 子代理默认配置来源：继承父 agent，或按自定义队列 */
+    subagentConfigMode: z.enum(SUBAGENT_CONFIG_MODES).default("inherit"),
+    /** 自定义队列 JSON（数组，按优先级从上到下） */
+    subagentModelQueue: z.string().default("[]"),
   }),
 });
 
 export type InjectorValues = z.infer<typeof injectorSettings.schema>;
+
+/**
+ * 解析子代理模型队列。非法 JSON 返回空队列与错误信息，服务端按继承模式兜底。
+ */
+export function parseSubagentQueue(raw: string): {
+  entries: SubagentQueueEntry[];
+  error: string | null;
+} {
+  const trimmed = raw.trim();
+  if (!trimmed) return { entries: [], error: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { entries: [], error: "不是合法 JSON" };
+  }
+  const result = subagentModelQueueSchema.safeParse(parsed);
+  if (!result.success) {
+    const detail = result.error.issues
+      .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+      .join("; ");
+    return { entries: [], error: detail };
+  }
+  return { entries: result.data, error: null };
+}
 
 /**
  * 兼容两种写法：
