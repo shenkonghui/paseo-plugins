@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { TokenUsageLogger } from "./types.js";
 import type { TokenUsageAgent, TokenUsageAgentId } from "./types.js";
+import type { CollectedTokenUsage } from "./counters.js";
 import type { YieldGate } from "./yield-gate.js";
 
 export interface TokenUsageCollectContext {
@@ -20,7 +21,15 @@ export interface TokenUsageCollectContext {
 export interface TokenUsageCollector {
   agentId: TokenUsageAgentId;
   displayName: string;
-  collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent>;
+  collect(context: TokenUsageCollectContext): Promise<CollectedTokenUsage>;
+}
+
+/**
+ * 采集不到数据（数据源缺失、读取失败）时的结果：只保留 agent 占位，
+ * 没有按天明细，本次采集范围内落成空桶。
+ */
+export function collectionOf(agent: TokenUsageAgent): CollectedTokenUsage {
+  return { agent, days: new Map() };
 }
 
 /** 数据源路径的展示形式：home 下缩成 `~/...`，其余保留绝对路径。 */

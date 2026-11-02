@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
-import type { TokenUsageAgent } from "../types.js";
 import { createYieldGate } from "../yield-gate.js";
 import { windowCutoffMs } from "../day-window.js";
 import { issueCutoffMs } from "../issues.js";
@@ -147,7 +146,7 @@ describe("OpencodeCollector", () => {
     );
     db.close();
 
-    const agent = await new OpencodeCollector().collect(makeContext(nowMs));
+    const { agent } = await new OpencodeCollector().collect(makeContext(nowMs));
 
     expect(agent.status).toBe("available");
     expect(agent.sessions).toBe(2);
@@ -242,7 +241,7 @@ describe("OpencodeCollector", () => {
     db.close();
 
     try {
-      const agent = await new OpencodeCollector().collect(makeContext(nowMs));
+      const { agent } = await new OpencodeCollector().collect(makeContext(nowMs));
 
       expect(agent.status).toBe("available");
       expect(agent.sessions).toBe(1);
@@ -270,7 +269,7 @@ describe("OpencodeCollector", () => {
     // Use a data home without an opencode directory; sibling tests create real ones.
     process.env.XDG_DATA_HOME = path.join(tempRoot, "empty");
     try {
-      const agent = await new OpencodeCollector().collect(makeContext(Date.now()));
+      const { agent } = await new OpencodeCollector().collect(makeContext(Date.now()));
       expect(agent.status).toBe("unavailable");
     } finally {
       process.env.XDG_DATA_HOME = dataHome;
@@ -317,7 +316,7 @@ describe("DevinCollector", () => {
       },
     ]);
 
-    const agent = await new DevinCollector().collect(makeContext(nowMs));
+    const { agent } = await new DevinCollector().collect(makeContext(nowMs));
     expect(agent.status).toBe("available");
     expect(agent.sessions).toBe(1);
     expect(agent.totals.requests).toBe(2);
@@ -350,7 +349,7 @@ describe("DevinCollector", () => {
       db.close();
 
       process.env.XDG_DATA_HOME = tzDataHome;
-      const agent = await new DevinCollector().collect(
+      const { agent } = await new DevinCollector().collect(
         makeContext(new Date("2026-10-18T12:00:00+08:00").getTime()),
       );
 
@@ -381,7 +380,7 @@ describe("CodebuddyCollector", () => {
       [JSON.stringify({ other: true }), rawUsage(10, 5), "not json", rawUsage(1, 1)].join("\n"),
     );
 
-    const agent: TokenUsageAgent = await new CodebuddyCollector().collect(makeContext(nowMs));
+    const { agent } = await new CodebuddyCollector().collect(makeContext(nowMs));
 
     expect(agent.status).toBe("available");
     expect(agent.totals.inputTokens).toBe(11);
@@ -421,7 +420,7 @@ describe("CodebuddyCollector", () => {
     fs.writeFileSync(path.join(intl, "i.jsonl"), usage(1, 1));
 
     try {
-      const agent = await new CodebuddyCollector().collect({
+      const { agent } = await new CodebuddyCollector().collect({
         ...makeContext(nowMs),
         homeDir: isolated,
       });
@@ -498,7 +497,7 @@ describe("CodebuddyCollector", () => {
       ].join("\n"),
     );
 
-    const agent = await new CodebuddyCollector().collect({
+    const { agent } = await new CodebuddyCollector().collect({
       ...makeContext(nowMs),
       homeDir: isolated,
     });
@@ -583,7 +582,7 @@ describe("QoderCollector", () => {
       ),
     );
 
-    const agent = await new QoderCollector().collect(makeContext(nowMs));
+    const { agent } = await new QoderCollector().collect(makeContext(nowMs));
 
     expect(agent.status).toBe("available");
     expect(agent.totals.inputTokens).toBe(111);
@@ -602,7 +601,7 @@ describe("QoderCollector", () => {
   it("reports unavailable when neither data root exists", async () => {
     const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-qoder-"));
     try {
-      const agent = await new QoderCollector().collect({
+      const { agent } = await new QoderCollector().collect({
         ...makeContext(Date.now()),
         homeDir: isolated,
       });
@@ -633,7 +632,7 @@ describe("PiCollector", () => {
       ].join("\n"),
     );
 
-    const agent = await new PiCollector().collect(makeContext(nowMs));
+    const { agent } = await new PiCollector().collect(makeContext(nowMs));
 
     expect(agent.status).toBe("available");
     expect(agent.totals.inputTokens).toBe(100);

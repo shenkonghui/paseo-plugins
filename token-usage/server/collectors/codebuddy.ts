@@ -1,9 +1,13 @@
 import path from "node:path";
-import type { TokenUsageAgent } from "../types.js";
-import { displaySourcePath, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
+import { displaySourcePath, collectionOf, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
 import { codebuddyHomes } from "../codebuddy-roots.js";
 import { localDayKey, localHourKey } from "../day-window.js";
-import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
+import {
+  unavailableAgent,
+  UsageAccumulator,
+  type CollectedTokenUsage,
+  type UsageDelta,
+} from "../counters.js";
 import { classifyIssue, parseResetAt, type RawIssue } from "../issues.js";
 import type { TranscriptFile } from "../transcript-files.js";
 import { firstNumber, listTranscriptFiles, parseJsonLine, readLines } from "../transcript-files.js";
@@ -54,7 +58,7 @@ export class CodebuddyCollector implements TokenUsageCollector {
   readonly agentId = "codebuddy" as const;
   readonly displayName = "CodeBuddy";
 
-  async collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent> {
+  async collect(context: TokenUsageCollectContext): Promise<CollectedTokenUsage> {
     const roots = codebuddyHomes(context.homeDir).map((home) =>
       path.join(home, ".codebuddy", "projects"),
     );
@@ -125,19 +129,22 @@ export class CodebuddyCollector implements TokenUsageCollector {
     }
 
     if (readableRoots.length === 0) {
-      return unavailableAgent({
-        agentId: this.agentId,
-        displayName: this.displayName,
-        error: `No CodeBuddy transcripts at ${sources.join(" or ")}`,
-        sources,
-      });
+      return collectionOf(
+        unavailableAgent({
+          agentId: this.agentId,
+          displayName: this.displayName,
+          error: `No CodeBuddy transcripts at ${sources.join(" or ")}`,
+          sources,
+        }),
+      );
     }
 
-    return accumulator.toAgent({
+    return accumulator.toCollectedAgent({
       agentId: this.agentId,
       displayName: this.displayName,
       status: "available",
       sources: readableRoots.map((root) => displaySourcePath(context.homeDir, root)),
+      todayMs: context.todayStartMs,
     });
   }
 }

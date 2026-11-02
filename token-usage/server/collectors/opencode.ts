@@ -1,8 +1,13 @@
 import path from "node:path";
-import type { TokenUsageAgent, TokenUsageIssueKind } from "../types.js";
-import { displaySourcePath, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
+import type { TokenUsageIssueKind } from "../types.js";
+import { displaySourcePath, collectionOf, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
 import { localDayKey, localHourKey } from "../day-window.js";
-import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
+import {
+  unavailableAgent,
+  UsageAccumulator,
+  type CollectedTokenUsage,
+  type UsageDelta,
+} from "../counters.js";
 import {
   openSqliteReadonly,
   readNumber,
@@ -31,7 +36,7 @@ export class OpencodeCollector implements TokenUsageCollector {
   readonly agentId = "opencode" as const;
   readonly displayName = "OpenCode";
 
-  async collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent> {
+  async collect(context: TokenUsageCollectContext): Promise<CollectedTokenUsage> {
     const databasePath = resolveDatabasePath(context.homeDir);
     const sourcePath = displaySourcePath(context.homeDir, databasePath);
     const accumulator = new UsageAccumulator();
@@ -40,16 +45,18 @@ export class OpencodeCollector implements TokenUsageCollector {
     try {
       db = await openSqliteReadonly(databasePath);
     } catch (error) {
-      return unavailableAgent({
-        agentId: this.agentId,
-        displayName: this.displayName,
-        error: messageOf(error),
-        status:
-          error instanceof SqliteMissingError || error instanceof SqliteUnavailableError
-            ? "unavailable"
-            : "error",
-        sources: [sourcePath],
-      });
+      return collectionOf(
+        unavailableAgent({
+          agentId: this.agentId,
+          displayName: this.displayName,
+          error: messageOf(error),
+          status:
+            error instanceof SqliteMissingError || error instanceof SqliteUnavailableError
+              ? "unavailable"
+              : "error",
+          sources: [sourcePath],
+        }),
+      );
     }
 
     try {
@@ -75,22 +82,25 @@ export class OpencodeCollector implements TokenUsageCollector {
       }
     } catch (error) {
       context.logger.debug({ err: error, databasePath }, "Failed to read OpenCode usage");
-      return unavailableAgent({
-        agentId: this.agentId,
-        displayName: this.displayName,
-        error: messageOf(error),
-        status: "error",
-        sources: [sourcePath],
-      });
+      return collectionOf(
+        unavailableAgent({
+          agentId: this.agentId,
+          displayName: this.displayName,
+          error: messageOf(error),
+          status: "error",
+          sources: [sourcePath],
+        }),
+      );
     } finally {
       db.close();
     }
 
-    return accumulator.toAgent({
+    return accumulator.toCollectedAgent({
       agentId: this.agentId,
       displayName: this.displayName,
       status: "available",
       sources: [sourcePath],
+      todayMs: context.todayStartMs,
     });
   }
 }

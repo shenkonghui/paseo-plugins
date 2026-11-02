@@ -1,18 +1,26 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { TokenUsageLogger } from "./types.js";
-import type { TokenUsageAgent } from "./types.js";
+import type { TokenUsageLogger, TokenUsageAgent, TokenUsageAgentId } from "./types.js";
 import type { TokenUsageCollectContext, TokenUsageCollector } from "./collector.js";
 import { CodebuddyCollector } from "./collectors/codebuddy.js";
 import { DevinCollector } from "./collectors/devin.js";
 import { OpencodeCollector } from "./collectors/opencode.js";
 import { PiCollector } from "./collectors/pi.js";
 import { QoderCollector } from "./collectors/qoder.js";
-import { windowCutoffMs } from "./day-window.js";
+import { dayKeysBetween, localDayKey, windowCutoffMs } from "./day-window.js";
 import { issueCutoffMs } from "./issues.js";
-import { unavailableAgent } from "./counters.js";
+import { unavailableAgent, type CollectedTokenUsage } from "./counters.js";
 import { createYieldGate } from "./yield-gate.js";
+import {
+  composeWindow,
+  emptyAgentCache,
+  mergeCollection,
+  missingDayStartMs,
+  parseCaches,
+  serializeCaches,
+  type AgentUsageCache,
+} from "./usage-cache.js";
 import {
   createStorageTargets,
   staleCutoffMs,
@@ -81,26 +89,13 @@ export interface TokenUsageCleanupOutcome {
   disk: TokenUsageDiskResult;
 }
 
-interface DiskCache {
-  fetchedAtMs: number;
-  /** 该快照覆盖的窗口（天）；旧版本没有这个字段，回退用 result.rangeDays。 */
-  windowDays?: number;
-  /** 采集时被关闭的 agent；旧版本没有这个字段，视为全部开启。 */
-  disabled?: string[];
-  result: TokenUsageListResult;
-}
-
-/** 缓存 key：窗口 + 关闭采集的 agent 集合。 */
-function cacheKeyFor(days: number, disabled: ReadonlySet<string>): string {
-  return `${days}|${[...disabled].sort().join(",")}`;
-}
-
 /**
  * Reads token usage out of the agent CLIs' own local stores. Collection is
  * deliberately sequential: every collector walks hundreds of megabytes with
  * synchronous steps, and a yield gate keeps each step inside the event-loop budget.
- * The last successful snapshot is also persisted, so a restart serves stale data
- * instantly; collection only runs on an explicit refresh request.
+ *
+ * 缓存按「天」存：每天一份桶，1 / 7 / 30 天窗口都由这些天拼出来。只有「今天」
+ * 会变，所以刷新只重采今天；历史桶直接复用，落盘后重启也不用重扫。
  */
 export class TokenUsageService {
   private readonly logger: TokenUsageLogger;
@@ -112,9 +107,9 @@ export class TokenUsageService {
   private readonly windowDays: number;
   private readonly now: () => number;
   private readonly cacheFile: string;
-  /** 按「窗口 + 关闭采集的 agent 集合」分别缓存。 */
-  private readonly caches = new Map<string, { fetchedAtMs: number; result: TokenUsageListResult }>();
-  private readonly inFlight = new Map<string, Promise<TokenUsageListResult>>();
+  private readonly agentCaches = new Map<TokenUsageAgentId, AgentUsageCache>();
+  /** 同一 agent、同一采集起点并发时只扫一遍。 */
+  private readonly inFlight = new Map<string, Promise<CollectedTokenUsage>>();
   /** 磁盘占用按「过期天数」缓存，避免每次打开面板都遍历数据目录。 */
   private readonly diskCaches = new Map<number, { fetchedAtMs: number; result: TokenUsageDiskResult }>();
   private readonly diskInFlight = new Map<number, Promise<TokenUsageDiskResult>>();
@@ -141,19 +136,99 @@ export class TokenUsageService {
   }): Promise<TokenUsageListOutcome> {
     const days = options?.windowDays ?? this.windowDays;
     const disabled = new Set(options?.disabledAgents ?? []);
-    const cacheKey = cacheKeyFor(days, disabled);
+    const forceRefresh = options?.forceRefresh === true;
     const nowMs = this.now();
-    if (options?.forceRefresh) {
-      return { result: await this.collectOnce(cacheKey, days, disabled), stale: false };
+    const startMs = windowCutoffMs(nowMs, days);
+    const todayStartMs = windowCutoffMs(nowMs, 1);
+    // 1 / 7 / 30 天共用一份按天缓存，只保留最长窗口，切短窗口不会丢数据。
+    const pruneBeforeMs = windowCutoffMs(nowMs, Math.max(this.windowDays, days));
+
+    const agents: TokenUsageAgent[] = [];
+    let stale = false;
+    let changed = false;
+
+    for (const collector of this.collectors) {
+      if (disabled.has(collector.agentId)) {
+        // 关闭采集：不碰数据源，但仍返回占位条目，保证 UI 上还能再打开开关。
+        agents.push(
+          unavailableAgent({
+            agentId: collector.agentId,
+            displayName: collector.displayName,
+            error: "已关闭采集",
+            status: "disabled",
+          }),
+        );
+        continue;
+      }
+
+      const cached = this.agentCaches.get(collector.agentId);
+      const missingStartMs = cached ? missingDayStartMs(cached, startMs, nowMs) : startMs;
+      if (cached && missingStartMs === undefined && !forceRefresh) {
+        if (nowMs - cached.collectedAtMs >= this.cacheTtlMs) {
+          stale = true;
+        }
+        agents.push(
+          composeWindow({
+            agentId: collector.agentId,
+            displayName: collector.displayName,
+            cache: cached,
+            startMs,
+            nowMs,
+          }),
+        );
+        continue;
+      }
+
+      // 缺哪天就从哪天补：首次是整窗，跨天只补今天，刷新在覆盖完整时也只重采今天。
+      const collectStartMs = missingStartMs ?? todayStartMs;
+      try {
+        const collected = await this.collectAgent(collector, collectStartMs, nowMs);
+        // 采集期间可能有别的窗口也在补同一天的桶，合并时以最新缓存为底。
+        const next = mergeCollection({
+          cache: this.agentCaches.get(collector.agentId) ?? emptyAgentCache(),
+          collected,
+          startMs: collectStartMs,
+          nowMs,
+          collectedAtMs: nowMs,
+          pruneBeforeMs,
+        });
+        this.agentCaches.set(collector.agentId, next);
+        changed = true;
+        agents.push(
+          composeWindow({
+            agentId: collector.agentId,
+            displayName: collector.displayName,
+            cache: next,
+            startMs,
+            nowMs,
+          }),
+        );
+      } catch (error) {
+        this.logger.debug(
+          { err: error, agentId: collector.agentId },
+          "Token usage collector failed",
+        );
+        // 丢掉今天：下次请求重试，而不是把失败藏在一个「看起来还新鲜」的快照后面。
+        this.agentCaches.get(collector.agentId)?.days.delete(localDayKey(nowMs));
+        agents.push(
+          unavailableAgent({
+            agentId: collector.agentId,
+            displayName: collector.displayName,
+            error: error instanceof Error ? error.message : String(error),
+            status: "error",
+          }),
+        );
+      }
     }
-    const cached = this.caches.get(cacheKey);
-    if (cached && nowMs - cached.fetchedAtMs < this.cacheTtlMs) {
-      return { result: cached.result, stale: false };
+
+    if (changed) {
+      this.persistCache();
     }
-    if (cached) {
-      return { result: cached.result, stale: true };
-    }
-    return { result: await this.collectOnce(cacheKey, days, disabled), stale: false };
+
+    return {
+      result: { fetchedAt: new Date(nowMs).toISOString(), rangeDays: days, agents },
+      stale,
+    };
   }
 
   /**
@@ -212,11 +287,49 @@ export class TokenUsageService {
       }
     }
 
+    // 会话被删掉后按天缓存不再可信：清掉涉及 agent 的用量缓存，下次重新采集。
+    for (const target of targets) {
+      this.agentCaches.delete(target.agentId);
+    }
+    this.inFlight.clear();
+    this.persistCache();
+
     // 数据变了：丢掉该阈值的磁盘缓存，重新统计一次。
     this.diskCaches.delete(days);
     this.diskInFlight.delete(days);
     const disk = await this.collectDiskOnce(days);
     return { results, disk };
+  }
+
+  private collectAgent(
+    collector: TokenUsageCollector,
+    cutoffMs: number,
+    nowMs: number,
+  ): Promise<CollectedTokenUsage> {
+    const key = `${collector.agentId}|${localDayKey(cutoffMs)}`;
+    const existing = this.inFlight.get(key);
+    if (existing) {
+      return existing;
+    }
+    const context: TokenUsageCollectContext = {
+      homeDir: this.homeDir,
+      nowMs,
+      cutoffMs,
+      issueCutoffMs: issueCutoffMs(nowMs),
+      todayStartMs: windowCutoffMs(nowMs, 1),
+      windowDays: dayKeysBetween(cutoffMs, nowMs).length,
+      logger: this.logger,
+      gate: createYieldGate(),
+    };
+    const request = collector.collect(context);
+    this.inFlight.set(key, request);
+    const settle = () => {
+      if (this.inFlight.get(key) === request) {
+        this.inFlight.delete(key);
+      }
+    };
+    request.then(settle, settle);
+    return request;
   }
 
   private collectDiskOnce(days: number): Promise<TokenUsageDiskResult> {
@@ -267,136 +380,24 @@ export class TokenUsageService {
     };
   }
 
-  private collectOnce(
-    cacheKey: string,
-    days: number,
-    disabled: ReadonlySet<string>,
-  ): Promise<TokenUsageListResult> {
-    const existing = this.inFlight.get(cacheKey);
-    if (existing) {
-      return existing;
-    }
-    const request = this.collectFresh(this.now(), days, disabled);
-    this.inFlight.set(cacheKey, request);
-    void request.finally(() => {
-      if (this.inFlight.get(cacheKey) === request) {
-        this.inFlight.delete(cacheKey);
-      }
-    });
-    return request;
-  }
-
-  private async collectFresh(
-    nowMs: number,
-    days: number,
-    disabled: ReadonlySet<string>,
-  ): Promise<TokenUsageListResult> {
-    const context: TokenUsageCollectContext = {
-      homeDir: this.homeDir,
-      nowMs,
-      cutoffMs: windowCutoffMs(nowMs, days),
-      issueCutoffMs: issueCutoffMs(nowMs),
-      todayStartMs: windowCutoffMs(nowMs, 1),
-      windowDays: days,
-      logger: this.logger,
-      gate: createYieldGate(),
-    };
-
-    const agents: TokenUsageAgent[] = [];
-    for (const collector of this.collectors) {
-      if (disabled.has(collector.agentId)) {
-        // 关闭采集：不碰数据源，但仍返回占位条目，保证 UI 上还能再打开开关。
-        agents.push(
-          unavailableAgent({
-            agentId: collector.agentId,
-            displayName: collector.displayName,
-            error: "已关闭采集",
-            status: "disabled",
-          }),
-        );
-        continue;
-      }
-      try {
-        agents.push(await collector.collect(context));
-      } catch (error) {
-        this.logger.debug(
-          { err: error, agentId: collector.agentId },
-          "Token usage collector failed",
-        );
-        agents.push(
-          unavailableAgent({
-            agentId: collector.agentId,
-            displayName: collector.displayName,
-            error: error instanceof Error ? error.message : String(error),
-            status: "error",
-          }),
-        );
-      }
-    }
-
-    const result: TokenUsageListResult = {
-      fetchedAt: new Date(nowMs).toISOString(),
-      rangeDays: days,
-      agents,
-    };
-    this.caches.set(cacheKeyFor(days, disabled), { fetchedAtMs: nowMs, result });
-    this.persistDiskCache(days, disabled, result, nowMs);
-    return result;
-  }
-
   private loadDiskCache(): void {
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.cacheFile, "utf8")) as Partial<DiskCache>;
-      if (
-        typeof parsed.fetchedAtMs === "number" &&
-        parsed.result &&
-        Array.isArray(parsed.result.agents)
-      ) {
-        const result: TokenUsageListResult = { ...parsed.result };
-        const days =
-          typeof result.rangeDays === "number" ? result.rangeDays : parsed.windowDays;
-        // 旧快照缺 hours（小时视图上线前）或 issues（失败事件上线前）或 sources（采集路径上线前）
-        // 时忽略它，让首次请求重新采集。
-        const hasHours = result.agents.every((agent) => Array.isArray(agent.hours));
-        const hasIssues = result.agents.every((agent) => Array.isArray(agent.issues));
-        const hasSources = result.agents.every((agent) => Array.isArray(agent.sources));
-        // 失败事件口径变为「只看当天」后，旧快照里可能还留着昨天的失败；
-        // 跨天或口径变更时直接丢掉快照重采，避免刚打开还显示昨晚的限流。
-        const todayStart = windowCutoffMs(this.now(), 1);
-        const issuesWithinToday = result.agents.every((agent) =>
-          (agent.issues ?? []).every((issue) => {
-            const lastAt = Date.parse(issue.lastAt);
-            return !Number.isFinite(lastAt) || lastAt >= todayStart;
-          }),
-        );
-        if (typeof days === "number" && hasHours && hasIssues && hasSources && issuesWithinToday) {
-          const disabled = new Set(Array.isArray(parsed.disabled) ? parsed.disabled : []);
-          this.caches.set(cacheKeyFor(days, disabled), {
-            fetchedAtMs: parsed.fetchedAtMs,
-            result,
-          });
-        }
+      const caches = parseCaches(fs.readFileSync(this.cacheFile, "utf8"));
+      if (!caches) {
+        return;
+      }
+      for (const [agentId, cache] of caches) {
+        this.agentCaches.set(agentId, cache);
       }
     } catch {
       // First run or unreadable snapshot; start cold.
     }
   }
 
-  private persistDiskCache(
-    days: number,
-    disabled: ReadonlySet<string>,
-    result: TokenUsageListResult,
-    fetchedAtMs: number,
-  ): void {
+  private persistCache(): void {
     try {
       fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true });
-      const payload = JSON.stringify({
-        fetchedAtMs,
-        windowDays: days,
-        disabled: [...disabled],
-        result,
-      } satisfies DiskCache);
-      fs.writeFileSync(this.cacheFile, payload);
+      fs.writeFileSync(this.cacheFile, serializeCaches(this.agentCaches));
     } catch (error) {
       this.logger.debug({ err: error }, "Failed to persist token usage cache");
     }

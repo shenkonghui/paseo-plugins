@@ -1,8 +1,12 @@
 import path from "node:path";
-import type { TokenUsageAgent } from "../types.js";
-import { displaySourcePath, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
+import { displaySourcePath, collectionOf, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
 import { localDayKey, localHourKey } from "../day-window.js";
-import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
+import {
+  unavailableAgent,
+  UsageAccumulator,
+  type CollectedTokenUsage,
+  type UsageDelta,
+} from "../counters.js";
 import type { TranscriptFile } from "../transcript-files.js";
 import { listTranscriptFiles, parseJsonLine, readLines } from "../transcript-files.js";
 
@@ -34,7 +38,7 @@ export class PiCollector implements TokenUsageCollector {
   readonly agentId = "pi" as const;
   readonly displayName = "Pi";
 
-  async collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent> {
+  async collect(context: TokenUsageCollectContext): Promise<CollectedTokenUsage> {
     const root = path.join(context.homeDir, ".pi", "agent", "sessions");
     const source = displaySourcePath(context.homeDir, root);
     const accumulator = new UsageAccumulator();
@@ -43,12 +47,14 @@ export class PiCollector implements TokenUsageCollector {
     try {
       files = await listTranscriptFiles(root);
     } catch (error) {
-      return unavailableAgent({
-        agentId: this.agentId,
-        displayName: this.displayName,
-        error: `No Pi sessions at ${source}: ${describe(error)}`,
-        sources: [source],
-      });
+      return collectionOf(
+        unavailableAgent({
+          agentId: this.agentId,
+          displayName: this.displayName,
+          error: `No Pi sessions at ${source}: ${describe(error)}`,
+          sources: [source],
+        }),
+      );
     }
 
     for (const file of files) {
@@ -85,11 +91,12 @@ export class PiCollector implements TokenUsageCollector {
       }
     }
 
-    return accumulator.toAgent({
+    return accumulator.toCollectedAgent({
       agentId: this.agentId,
       displayName: this.displayName,
       status: "available",
       sources: [source],
+      todayMs: context.todayStartMs,
     });
   }
 }

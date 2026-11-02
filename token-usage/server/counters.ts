@@ -1,3 +1,4 @@
+import { localDayKey } from "./day-window.js";
 import type {
   TokenUsageAgent,
   TokenUsageAgentId,
@@ -104,6 +105,36 @@ function addToOptional(target: number | null, value: number | undefined): number
   return (target ?? 0) + value;
 }
 
+function addModelUsage(
+  target: Map<string, UsageCounters>,
+  model: string,
+  delta: UsageDelta,
+): void {
+  const bucket = target.get(model) ?? emptyCounters();
+  addUsageTo(bucket, delta);
+  target.set(model, bucket);
+}
+
+/** 跨天合并：某个维度在任一天有值就算有值，全为 null 才保持 null。 */
+export function mergeCounters(target: UsageCounters, source: UsageCounters): void {
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  target.totalTokens += source.totalTokens;
+  target.requests += source.requests;
+  target.reasoningTokens = addNullable(target.reasoningTokens, source.reasoningTokens);
+  target.cacheReadTokens = addNullable(target.cacheReadTokens, source.cacheReadTokens);
+  target.cacheWriteTokens = addNullable(target.cacheWriteTokens, source.cacheWriteTokens);
+  target.costUsd = addNullable(target.costUsd, source.costUsd);
+  target.costCredits = addNullable(target.costCredits, source.costCredits);
+}
+
+function addNullable(target: number | null, value: number | null): number | null {
+  if (value === null) {
+    return target;
+  }
+  return (target ?? 0) + value;
+}
+
 function readNumber(value: number | undefined, fallback = 0): number {
   return value !== undefined && Number.isFinite(value) ? value : fallback;
 }
@@ -111,6 +142,32 @@ function readNumber(value: number | undefined, fallback = 0): number {
 interface DayBucket {
   counters: UsageCounters;
   sessions: Set<string>;
+  /** 当天按模型的明细；窗口的模型榜由各天相加而来。 */
+  models: Map<string, UsageCounters>;
+}
+
+/** 小时桶只服务「今天」的曲线，不需要模型维度。 */
+interface HourBucket {
+  counters: UsageCounters;
+  sessions: Set<string>;
+}
+
+/** 一天的明细快照；服务端按天缓存后拼装任意窗口。 */
+export interface CollectedDay {
+  counters: UsageCounters;
+  models: Map<string, UsageCounters>;
+  /** 当天出现过的会话（相对数据根的路径）；窗口内按并集去重。 */
+  sessionIds: Set<string>;
+  /** 只有「今天」有：0-23 点的小时桶。 */
+  hours?: TokenUsageHour[];
+  /** 只有「今天」有：当天 0 点以来的失败事件。 */
+  issues?: TokenUsageIssue[];
+}
+
+/** A collector's output: the wire-shaped agent plus the per-day detail behind it. */
+export interface CollectedTokenUsage {
+  agent: TokenUsageAgent;
+  days: Map<string, CollectedDay>;
 }
 
 interface ModelBucket {
@@ -139,7 +196,7 @@ interface IssueBucket {
 /** Rolls per-call records into per-day, per-model, and overall buckets. */
 export class UsageAccumulator {
   private readonly days = new Map<string, DayBucket>();
-  private readonly hours = new Map<string, DayBucket>();
+  private readonly hours = new Map<string, HourBucket>();
   private readonly models = new Map<string, ModelBucket>();
   private readonly sessions = new Set<string>();
   private readonly issues = new Map<string, IssueBucket>();
@@ -148,11 +205,18 @@ export class UsageAccumulator {
   record(input: UsageRecord): void {
     addUsageTo(this.totals, input.delta);
 
-    const day = this.days.get(input.dayKey) ?? { counters: emptyCounters(), sessions: new Set() };
+    const day = this.days.get(input.dayKey) ?? {
+      counters: emptyCounters(),
+      sessions: new Set<string>(),
+      models: new Map<string, UsageCounters>(),
+    };
     addUsageTo(day.counters, input.delta);
     if (input.sessionId) {
       day.sessions.add(input.sessionId);
       this.sessions.add(input.sessionId);
+    }
+    if (input.model) {
+      addModelUsage(day.models, input.model, input.delta);
     }
     this.days.set(input.dayKey, day);
 
@@ -231,13 +295,7 @@ export class UsageAccumulator {
       .map((bucket) => Object.assign({ model: bucket.model }, toWireCounters(bucket.counters)))
       .sort((a, b) => b.totalTokens - a.totalTokens);
     const hours: TokenUsageHour[] = [...this.hours.entries()]
-      .map(([key, bucket]) => {
-        const hour = Number(key.slice(key.indexOf("T") + 1));
-        return Object.assign(
-          { hour: Number.isFinite(hour) ? hour : 0, sessions: bucket.sessions.size },
-          toWireCounters(bucket.counters),
-        );
-      })
+      .map(([key, bucket]) => hourEntry(key, bucket))
       .sort((a, b) => a.hour - b.hour);
 
     return {
@@ -253,6 +311,51 @@ export class UsageAccumulator {
       models,
       issues: this.toIssues(),
     };
+  }
+
+  /**
+   * 一次采集的完整结果：wire 形状的 agent + 按天明细。
+   * 服务端缓存明细后，任意窗口都从每天拼装，不需要为了 7 / 30 天重扫历史。
+   */
+  toCollectedAgent(
+    input: {
+      agentId: TokenUsageAgentId;
+      displayName: string;
+      status: TokenUsageAgent["status"];
+      error?: string | null;
+      sources?: string[];
+      /** 采集时刻，用来把小时桶与失败事件挂到「今天」这一天。 */
+      todayMs: number;
+    },
+  ): CollectedTokenUsage {
+    const days = new Map<string, CollectedDay>();
+    for (const [date, bucket] of this.days) {
+      days.set(date, {
+        counters: bucket.counters,
+        models: bucket.models,
+        sessionIds: bucket.sessions,
+      });
+    }
+
+    // 小时桶的 key 自带日期前缀；它只会为当天产生，挂回对应的天即可。
+    for (const [key, bucket] of this.hours) {
+      const day = days.get(key.slice(0, key.indexOf("T")));
+      if (!day) {
+        continue;
+      }
+      (day.hours ??= []).push(hourEntry(key, bucket));
+    }
+
+    const todayKey = localDayKey(input.todayMs);
+    const today: CollectedDay = days.get(todayKey) ?? {
+      counters: emptyCounters(),
+      models: new Map<string, UsageCounters>(),
+      sessionIds: new Set<string>(),
+    };
+    today.issues = this.toIssues();
+    days.set(todayKey, today);
+
+    return { agent: this.toAgent(input), days };
   }
 
   /** 最近的排前面；同一时刻按出现次数多的排前面。 */
@@ -297,7 +400,15 @@ export function unavailableAgent(input: {
   };
 }
 
-function toWireCounters(counters: UsageCounters): TokenUsageCounters {
+function hourEntry(key: string, bucket: HourBucket): TokenUsageHour {
+  const hour = Number(key.slice(key.indexOf("T") + 1));
+  return Object.assign(
+    { hour: Number.isFinite(hour) ? hour : 0, sessions: bucket.sessions.size },
+    toWireCounters(bucket.counters),
+  );
+}
+
+export function toWireCounters(counters: UsageCounters): TokenUsageCounters {
   const wire: TokenUsageCounters = {
     inputTokens: counters.inputTokens,
     outputTokens: counters.outputTokens,

@@ -1,14 +1,18 @@
-import type { TokenUsageAgent } from "../types.js";
-import { displaySourcePath, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
+import { displaySourcePath, collectionOf, type TokenUsageCollectContext, type TokenUsageCollector } from "../collector.js";
 import { localDayKey, localHourKey } from "../day-window.js";
-import { unavailableAgent, type UsageDelta, UsageAccumulator } from "../counters.js";
+import {
+  unavailableAgent,
+  UsageAccumulator,
+  type CollectedTokenUsage,
+  type UsageDelta,
+} from "../counters.js";
 import { collectDevinRows, resolveDatabasePath, type DevinUsageRow } from "./devin-worker.js";
 
 export class DevinCollector implements TokenUsageCollector {
   readonly agentId = "devin" as const;
   readonly displayName = "Devin";
 
-  async collect(context: TokenUsageCollectContext): Promise<TokenUsageAgent> {
+  async collect(context: TokenUsageCollectContext): Promise<CollectedTokenUsage> {
     const accumulator = new UsageAccumulator();
     const source = displaySourcePath(
       context.homeDir,
@@ -24,13 +28,15 @@ export class DevinCollector implements TokenUsageCollector {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       context.logger.debug({ err: error }, "Failed to read Devin usage");
-      return unavailableAgent({
-        agentId: this.agentId,
-        displayName: this.displayName,
-        error: message,
-        status: "unavailable",
-        sources: [source],
-      });
+      return collectionOf(
+        unavailableAgent({
+          agentId: this.agentId,
+          displayName: this.displayName,
+          error: message,
+          status: "unavailable",
+          sources: [source],
+        }),
+      );
     }
 
     for (const row of rows) {
@@ -38,11 +44,12 @@ export class DevinCollector implements TokenUsageCollector {
       await context.gate.maybeYield();
     }
 
-    return accumulator.toAgent({
+    return accumulator.toCollectedAgent({
       agentId: this.agentId,
       displayName: this.displayName,
       status: "available",
       sources: [source],
+      todayMs: context.todayStartMs,
     });
   }
 }
