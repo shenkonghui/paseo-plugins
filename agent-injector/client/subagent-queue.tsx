@@ -27,6 +27,7 @@ interface ProviderOption {
   id: string;
   label: string;
   models: ModelOption[];
+  modes: { id: string; label: string }[];
 }
 
 type CatalogState =
@@ -87,6 +88,7 @@ function readCatalog(payload: {
     provider: string;
     enabled?: boolean;
     label?: string;
+    modes?: readonly { id: string; label: string }[];
     models?: readonly {
       id: string;
       label: string;
@@ -102,6 +104,7 @@ function readCatalog(payload: {
     .map((entry) => ({
       id: entry.provider,
       label: entry.label ? `${entry.provider}（${entry.label}）` : entry.provider,
+      modes: (entry.modes ?? []).map((mode) => ({ id: mode.id, label: mode.label })),
       models: (entry.models ?? [])
         .filter((model) => model.isSelectable !== false)
         .map((model) => ({
@@ -117,6 +120,27 @@ function readCatalog(payload: {
           })),
         })),
     }));
+}
+
+/**
+ * 队列项的 provider 既可写成 `provider`，也可写成 `provider/model`（手改 JSON 时常见）；
+ * 拆成目录里的 provider id 和模型 id，编辑弹窗才能正确回填。
+ */
+function splitEntryConfig(
+  entry: SubagentModelEntry,
+  providers: readonly ProviderOption[],
+): { providerId: string; modelId: string | null } {
+  if (providers.some((provider) => provider.id === entry.provider)) {
+    return { providerId: entry.provider, modelId: entry.model ?? null };
+  }
+  const slash = entry.provider.indexOf("/");
+  if (slash > 0) {
+    return {
+      providerId: entry.provider.slice(0, slash),
+      modelId: entry.model ?? entry.provider.slice(slash + 1),
+    };
+  }
+  return { providerId: entry.provider, modelId: entry.model ?? null };
 }
 
 const styles = StyleSheet.create({
@@ -181,7 +205,9 @@ function QueueRowView({
   active,
   note,
   noteTone,
+  entryEditable,
   onMove,
+  onEdit,
   onRemove,
 }: {
   index: number;
@@ -193,7 +219,9 @@ function QueueRowView({
   active: boolean;
   note: string | null;
   noteTone: "muted" | "danger";
+  entryEditable: boolean;
   onMove(from: number, to: number): boolean;
+  onEdit(index: number): void;
   onRemove(index: number): void;
 }) {
   const indexRef = useRef(index);
@@ -291,6 +319,18 @@ function QueueRowView({
           </Text>
         ) : null}
       </View>
+      {editable && entryEditable ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`编辑第 ${index + 1} 项`}
+          onPress={() => onEdit(index)}
+          style={styles.action}
+        >
+          <Text style={[styles.actionText, { color: theme.colors.foreground }]}>✎</Text>
+        </Pressable>
+      ) : (
+        <View style={styles.action} />
+      )}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`上移第 ${index + 1} 项`}
@@ -361,7 +401,10 @@ export function SubagentQueueEditor({
   const [providerId, setProviderId] = useState<string | null>(null);
   const [modelId, setModelId] = useState<string | null>(null);
   const [thinkingId, setThinkingId] = useState<string>("");
-  const [adding, setAdding] = useState(false);
+  const [modeId, setModeId] = useState<string>("");
+  const [editor, setEditor] = useState<{ mode: "add" } | { mode: "edit"; index: number } | null>(
+    null,
+  );
   const [failedOpen, setFailedOpen] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const lastValue = useRef(value);
@@ -494,10 +537,9 @@ export function SubagentQueueEditor({
   useEffect(() => {
     if (!activeProvider) return;
     const models = activeProvider.models;
-    setModelId((current) =>
-      current && models.some((model) => model.id === current)
-        ? current
-        : (models.find((model) => model.isDefault) ?? models[0])?.id ?? null,
+    setModelId(
+      (current) =>
+        current ?? (models.find((model) => model.isDefault) ?? models[0])?.id ?? null,
     );
   }, [activeProvider]);
 
@@ -507,12 +549,20 @@ export function SubagentQueueEditor({
   );
 
   useEffect(() => {
+    if (!activeModel) return;
     setThinkingId((current) =>
-      current && activeModel?.thinkingOptions.some((option) => option.id === current)
-        ? current
-        : "",
+      current && !activeModel.thinkingOptions.some((option) => option.id === current)
+        ? ""
+        : current,
     );
   }, [activeModel]);
+
+  // 模式列表可能为空（provider 尚未返回），此时保留已配置的值，避免编辑时被清空。
+  useEffect(() => {
+    if (!activeProvider || activeProvider.modes.length === 0) return;
+    const ids = new Set(activeProvider.modes.map((mode) => mode.id));
+    setModeId((current) => (current && !ids.has(current) ? "" : current));
+  }, [activeProvider]);
 
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
@@ -540,23 +590,50 @@ export function SubagentQueueEditor({
     [rows, commit],
   );
 
-  const add = useCallback(() => {
-    if (!activeProvider || !activeModel) return;
+  const openAdd = useCallback(() => {
+    setModelId(null);
+    setThinkingId("");
+    setModeId("");
+    setEditor({ mode: "add" });
+  }, []);
+
+  const openEdit = useCallback(
+    (index: number) => {
+      const row = rowsRef.current[index];
+      if (!row || isInheritEntry(row.entry)) return;
+      const next = splitEntryConfig(row.entry, catalogProviders);
+      setProviderId(next.providerId);
+      setModelId(next.modelId);
+      setThinkingId(row.entry.thinkingOptionId ?? "");
+      setModeId(row.entry.modeId ?? "");
+      setEditor({ mode: "edit", index });
+    },
+    [catalogProviders],
+  );
+
+  const saveEntry = useCallback(() => {
+    if (!providerId) return;
     const entry: SubagentModelEntry = {
-      provider: activeProvider.id,
-      model: activeModel.id,
+      provider: activeProvider?.id ?? providerId,
+      ...(modelId ? { model: modelId } : {}),
+      ...(modeId ? { modeId } : {}),
       ...(thinkingId ? { thinkingOptionId: thinkingId } : {}),
     };
-    commit([...rows, { id: `row-${++rowSeq}`, entry }]);
-    setAdding(false);
-    setThinkingId("");
-  }, [activeProvider, activeModel, thinkingId, rows, commit]);
+    const current = rowsRef.current;
+    if (editor?.mode === "edit") {
+      if (editor.index >= current.length) return;
+      commit(current.map((row, i) => (i === editor.index ? { ...row, entry } : row)));
+    } else {
+      commit([...current, { id: `row-${++rowSeq}`, entry }]);
+    }
+    setEditor(null);
+  }, [providerId, activeProvider, modelId, modeId, thinkingId, editor, commit]);
 
   const addInherit = useCallback(() => {
     const entry: SubagentQueueEntry = { inherit: true };
-    commit([...rows, { id: `row-${++rowSeq}`, entry }]);
-    setAdding(false);
-  }, [rows, commit]);
+    commit([...rowsRef.current, { id: `row-${++rowSeq}`, entry }]);
+    setEditor(null);
+  }, [commit]);
 
   const providerOptions = useMemo(
     () => catalogProviders.map((provider) => ({ label: provider.label, value: provider.id })),
@@ -580,15 +657,30 @@ export function SubagentQueueEditor({
     ],
     [activeModel],
   );
+  const modeOptions = useMemo(
+    () => [
+      { label: "默认", value: "" },
+      ...(activeProvider?.modes ?? []).map((mode) => ({
+        label: mode.label,
+        value: mode.id,
+      })),
+    ],
+    [activeProvider],
+  );
 
-  const addDisabled = !editable || !activeProvider || !activeModel;
+  const editing = editor?.mode === "edit";
+  // 编辑旧项时允许保留目录里查不到的值（provider 已禁用、模型改名）；
+  // 新增则必须选中可用的模型。
+  const saveDisabled =
+    !editable || !providerId || (!editing && !(activeProvider && activeModel));
+  const editorOpen = editor !== null;
 
   return (
     <View>
       <View style={styles.queueHeader}>
         <Text style={[styles.queueTitle, { color: theme.colors.foreground }]}>模型队列</Text>
         <Text style={[styles.queueCount, { color: theme.colors.foregroundMuted }]}>
-          {rows.length} 项 · 拖动 ⋮⋮ 排序，越靠上优先级越高
+          {rows.length} 项 · 点 ✎ 编辑，拖动 ⋮⋮ 排序，越靠上优先级越高
         </Text>
       </View>
       {parsed.error ? (
@@ -628,7 +720,9 @@ export function SubagentQueueEditor({
               active={active}
               note={note}
               noteTone={noteTone}
+              entryEditable={!isInheritEntry(row.entry)}
               onMove={move}
+              onEdit={openEdit}
               onRemove={remove}
             />
           );
@@ -657,9 +751,9 @@ export function SubagentQueueEditor({
       {editable ? (
         <SettingsAction
           label="添加队列项"
-          hint="选择 provider/模型，或添加「继承父 agent」；添加后可用 ⋮⋮ 拖动排序"
+          hint="选择 provider/模型，或添加「继承父 agent」；添加后可用 ✎ 修改、⋮⋮ 拖动排序"
           actionLabel="添加"
-          onPress={() => setAdding(true)}
+          onPress={openAdd}
         />
       ) : null}
       {parsed.error && editable ? (
@@ -721,14 +815,22 @@ export function SubagentQueueEditor({
           ) : null}
         </Modal.Content>
       </Modal>
-      <Modal title="添加模型队列项" open={adding} onOpenChange={setAdding}>
+      <Modal
+        title={editing ? "编辑模型队列项" : "添加模型队列项"}
+        open={editorOpen}
+        onOpenChange={(open) => {
+          if (!open) setEditor(null);
+        }}
+      >
         <Modal.Content>
-          <SettingsAction
-            label="继承父 agent 配置"
-            hint="复用父 agent 当前的 provider/model/mode/思考；继承总是可用，通常放最后作兜底"
-            actionLabel="添加"
-            onPress={addInherit}
-          />
+          {editing ? null : (
+            <SettingsAction
+              label="继承父 agent 配置"
+              hint="复用父 agent 当前的 provider/model/mode/思考；继承总是可用，通常放最后作兜底"
+              actionLabel="添加"
+              onPress={addInherit}
+            />
+          )}
           {catalog.status === "loading" ? (
             <Text style={[styles.hint, { color: theme.colors.foregroundMuted }]}>
               正在加载可用的 provider 与模型…
@@ -751,6 +853,7 @@ export function SubagentQueueEditor({
                   setProviderId(next);
                   setModelId(null);
                   setThinkingId("");
+                  setModeId("");
                 }}
               />
               <SettingsSelect
@@ -763,6 +866,15 @@ export function SubagentQueueEditor({
                   setThinkingId("");
                 }}
               />
+              {activeProvider && activeProvider.modes.length > 0 ? (
+                <SettingsSelect
+                  label="会话模式"
+                  hint="留空使用该 provider 的默认模式"
+                  value={modeId}
+                  options={modeOptions}
+                  onValueChange={setModeId}
+                />
+              ) : null}
               {activeModel && activeModel.thinkingOptions.length > 0 ? (
                 <SettingsSelect
                   label="思考档位"
@@ -773,10 +885,10 @@ export function SubagentQueueEditor({
                 />
               ) : null}
               <SettingsAction
-                label="添加到队列末尾"
-                actionLabel="添加"
-                disabled={addDisabled}
-                onPress={add}
+                label={editing ? "保存这项修改" : "添加到队列末尾"}
+                actionLabel={editing ? "保存" : "添加"}
+                disabled={saveDisabled}
+                onPress={saveEntry}
               />
             </>
           )}

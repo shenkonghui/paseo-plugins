@@ -1,5 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { applyInjection } from "./server/inject";
+import { handleAutoTitleTurnEnded, handleHelperPermissionRequest } from "./server/auto-title";
 import { createSubagentTool, evaluateQueue } from "./server/subagent-tools";
 import {
   clearEntryFailure,
@@ -65,12 +66,35 @@ export default function contributeServer(server: PluginServerContext) {
     cleared: clearFailures(input.keys),
   }));
 
-  // 由 create_subagent 创建的子 agent 失败后，把失败归因到对应队列项并冷却。
-  server.on("agent.turn_ended", ({ agent, outcome }) => {
-    const key = takePendingAgent(agent.id);
-    if (!key) return;
-    if (outcome.kind === "failed") markEntryFailed(key);
-    else if (outcome.kind === "completed") clearEntryFailure(key);
+  // 标题助手只为调用 update_agent 而生：自动放行该权限，其它请求直接拒绝。
+  // 否则助手会停在 permission 状态，本回合不结束，后续自动标题也会被占位挡住。
+  server.on("agent.permission_requested", async (event, context) => {
+    try {
+      await handleHelperPermissionRequest(context, event.agent, event.request);
+    } catch (error) {
+      console.warn(
+        `[agent-injector] 处理标题助手权限失败: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  // 子代理失败后把失败归因到对应队列项并冷却；同时按设置触发自动标题。
+  server.on("agent.turn_ended", async (event, context) => {
+    const key = takePendingAgent(event.agent.id);
+    if (key) {
+      if (event.outcome.kind === "failed") markEntryFailed(key);
+      else if (event.outcome.kind === "completed") clearEntryFailure(key);
+    }
+
+    const state = await settings.read();
+    if (state.status !== "ready") return;
+    try {
+      await handleAutoTitleTurnEnded(context, state.values, event.agent, event.outcome);
+    } catch (error) {
+      console.warn(
+        `[agent-injector] 自动标题处理失败: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   });
   server.on("agent.closed", ({ agent }) => {
     takePendingAgent(agent.id);

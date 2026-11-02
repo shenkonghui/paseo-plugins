@@ -89,6 +89,16 @@ export const injectorSettings = defineSettings({
     subagentModelQueue: z.string().default("[]"),
     /** 队列项失败后的冷却时长（小时）；0 表示失败后不跳过 */
     subagentFailureCooldownHours: z.number().min(0).max(720).default(4),
+    /** 根据对话内容自动更新 agent 标题 */
+    autoTitleEnabled: z.boolean().default(false),
+    /** 每隔多少个已完成的回合跑一次标题助手（首轮完成后总会先跑一次） */
+    autoTitleTurns: z.number().int().min(1).max(100).default(5),
+    /** 两次自动标题之间的最小间隔（分钟） */
+    autoTitleIntervalMinutes: z.number().int().min(0).max(1440).default(10),
+    /** 自动标题时同步更新所在 workspace 的标题 */
+    autoTitleWorkspace: z.boolean().default(false),
+    /** 自定义标题要求，替换内置的「要求：中文，不超过30字…」；留空用默认值 */
+    autoTitlePrompt: z.string().default(""),
   }),
 });
 

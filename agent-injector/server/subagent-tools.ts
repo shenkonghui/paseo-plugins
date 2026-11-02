@@ -11,7 +11,7 @@ import {
 import { queueEntryKey } from "../shared/queue-status";
 import { cooldownUntil, markEntryFailed, markPendingAgent } from "./queue-state";
 
-type ChildConfig = {
+export type ChildConfig = {
   provider: string;
   modeId?: string;
   thinkingOptionId?: string;
@@ -78,7 +78,10 @@ async function validateThinkingOption(
 }
 
 /** 继承父 agent 时复用其 provider/model/mode/thinking/feature，并校验思考档位。 */
-async function resolveInheritedConfig(paseo: PaseoApi, parent: PaseoAgent): Promise<ChildConfig> {
+export async function resolveInheritedConfig(
+  paseo: PaseoApi,
+  parent: PaseoAgent,
+): Promise<ChildConfig> {
   const inherited = inheritFromAgent(parent);
   const parsed = splitProviderModel(inherited.provider);
   const thinkingOptionId = await validateThinkingOption(

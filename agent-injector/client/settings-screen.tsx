@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
   useSettings,
   type PluginSurfaceProps,
   type SettingsState,
 } from "@getpaseo/plugin/client";
 import {
+  Icon,
   ScrollView,
   SettingsAction,
   SettingsCard,
@@ -52,6 +53,25 @@ const styles = StyleSheet.create({
   messageRow: { paddingHorizontal: 16, paddingBottom: 12 },
   screen: { flex: 1 },
   screenContent: { padding: 16, paddingBottom: 32 },
+  split: { flex: 1, flexDirection: "row" },
+  nav: {
+    width: 168,
+    borderRightWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    gap: 2,
+  },
+  navItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  navLabel: { fontSize: 13, lineHeight: 18 },
+  splitContent: { flex: 1 },
+  saveBar: { borderTopWidth: 1, paddingHorizontal: 16, paddingVertical: 10 },
 });
 
 function TextArea(props: {
@@ -178,12 +198,26 @@ function StatusMessage({
   );
 }
 
+type SectionId = "general" | "inject" | "subagent" | "autoTitle" | "builtin";
+
+/** 宽屏全屏页的左侧分类导航；每个 tab 对应下方一个或多个 SettingsSection。 */
+const SECTION_TABS: { id: SectionId; label: string; icon: string }[] = [
+  { id: "general", label: "通用", icon: "SlidersHorizontal" },
+  { id: "inject", label: "规则与 MCP", icon: "Syringe" },
+  { id: "subagent", label: "子代理工具", icon: "Bot" },
+  { id: "autoTitle", label: "自动标题", icon: "Type" },
+  { id: "builtin", label: "内置工具", icon: "Wrench" },
+];
+
 function Editor({
   settings,
   theme,
+  tabbed,
 }: {
   settings: ReadySettings;
   theme: PluginSurfaceProps["theme"];
+  /** true 时按左侧分类 tab 分页显示；false/缺省为整页堆叠（Settings → Plugins 嵌入页）。 */
+  tabbed?: boolean;
 }) {
   const [draft, setDraft] = useState(() => ({
     values: settings.values,
@@ -236,8 +270,35 @@ function Editor({
 
   const disabled = settings.saving;
 
-  return (
-    <View>
+  const [tab, setTab] = useState<SectionId>("general");
+  const show = useCallback((id: SectionId) => !tabbed || tab === id, [tabbed, tab]);
+
+  const saveArea = (
+    <>
+      <SettingsCard>
+        <SettingsAction
+          label="保存全部改动"
+          actionLabel={settings.saving ? "保存中…" : "保存"}
+          disabled={disabled}
+          onPress={save}
+        />
+        <SettingsAction
+          label="放弃未保存的改动"
+          actionLabel="还原"
+          disabled={disabled}
+          onPress={discard}
+        />
+      </SettingsCard>
+      {settings.saveError ? (
+        <StatusMessage text={settings.saveError} tone="danger" theme={theme} />
+      ) : null}
+    </>
+  );
+
+  const sections = (
+    <>
+      {show("general") ? (
+        <>
       <SettingsSection title="总开关">
         <SettingsCard>
           <SettingsSwitch
@@ -263,7 +324,11 @@ function Editor({
           />
         </SettingsCard>
       </SettingsSection>
+        </>
+      ) : null}
 
+      {show("inject") ? (
+        <>
       <SettingsSection title="全局规则">
         <SettingsCard>
           <TextArea
@@ -316,7 +381,10 @@ function Editor({
           />
         </SettingsCard>
       </SettingsSection>
+        </>
+      ) : null}
 
+      {show("subagent") ? (
       <SettingsSection
         title="子代理工具"
         info="会话打开时向模型注入 create_subagent，让 agent 自行派生子代理：默认继承父 agent 的配置，也可按模型队列选择。opencode provider 走 bridge，暂不暴露插件注入的工具。"
@@ -378,32 +446,114 @@ function Editor({
           />
         </SettingsCard>
       </SettingsSection>
-
-      <BuiltinToolsSection theme={theme} />
-
-      <SettingsCard>
-        <SettingsAction
-          label="保存全部改动"
-          actionLabel={settings.saving ? "保存中…" : "保存"}
-          disabled={disabled}
-          onPress={save}
-        />
-        <SettingsAction
-          label="放弃未保存的改动"
-          actionLabel="还原"
-          disabled={disabled}
-          onPress={discard}
-        />
-      </SettingsCard>
-
-      {settings.saveError ? (
-        <StatusMessage text={settings.saveError} tone="danger" theme={theme} />
       ) : null}
+
+      {show("autoTitle") ? (
+      <SettingsSection
+        title="自动标题"
+        info="agent 每完成一轮，按间隔创建一个一次性标题助手，读取最近对话后调用 update_agent 改名。插件无法直接改 agent 标题，只能由助手完成；workspace 标题由插件直接写入。"
+      >
+        <SettingsCard>
+          <SettingsSwitch
+            label="根据对话自动更新 agent 标题"
+            hint="首轮完成后触发一次，之后每 N 轮且间隔足够时才再次触发"
+            value={draft.values.autoTitleEnabled}
+            disabled={disabled || !draft.values.enabled}
+            onValueChange={(value) => update("autoTitleEnabled", value)}
+          />
+          <NumberField
+            label="触发间隔（轮）"
+            hint="每完成多少轮检查一次；1 表示每轮都检查（仍受下方时间间隔限制）"
+            value={draft.values.autoTitleTurns}
+            min={1}
+            max={100}
+            editable={!disabled && draft.values.enabled && draft.values.autoTitleEnabled}
+            onChange={(value) => update("autoTitleTurns", value)}
+            theme={theme}
+          />
+          <NumberField
+            label="最小间隔（分钟）"
+            hint="两次自动标题之间的最短时间；0 表示不限制"
+            value={draft.values.autoTitleIntervalMinutes}
+            min={0}
+            max={1440}
+            editable={!disabled && draft.values.enabled && draft.values.autoTitleEnabled}
+            onChange={(value) => update("autoTitleIntervalMinutes", value)}
+            theme={theme}
+          />
+          <SettingsSwitch
+            label="同步更新 workspace 标题"
+            hint="用生成的标题改写所在 workspace；已手动改名过的 agent / workspace 不会被覆盖"
+            value={draft.values.autoTitleWorkspace}
+            disabled={disabled || !draft.values.enabled || !draft.values.autoTitleEnabled}
+            onValueChange={(value) => update("autoTitleWorkspace", value)}
+          />
+          <TextArea
+            label="自定义标题要求"
+            hint="替换内置的「要求：中文，不超过30字…」一行，可指定语言、字数、格式；update_agent 调用指令不受影响。留空用默认值"
+            value={draft.values.autoTitlePrompt}
+            placeholder="要求：中文，不超过 30 个字；点出正在做的具体任务；不要引号、句号、emoji"
+            editable={!disabled && draft.values.enabled && draft.values.autoTitleEnabled}
+            onChangeText={(text) => update("autoTitlePrompt", text)}
+            theme={theme}
+          />
+          <StatusMessage
+            text="标题助手使用父 agent 的 provider/model 运行一轮，会产生额外调用；仅对顶层 agent 生效，子代理与助手自身不改名。"
+            theme={theme}
+          />
+        </SettingsCard>
+      </SettingsSection>
+      ) : null}
+
+      {show("builtin") ? <BuiltinToolsSection theme={theme} /> : null}
+    </>
+  );
+
+  if (!tabbed) {
+    return (
+      <View>
+        {sections}
+        {saveArea}
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.split}>
+      <View style={[styles.nav, { borderRightColor: theme.colors.border }]}>
+        {SECTION_TABS.map((item) => {
+          const active = item.id === tab;
+          const color = active ? theme.colors.foreground : theme.colors.foregroundMuted;
+          return (
+            <Pressable
+              key={item.id}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              onPress={() => setTab(item.id)}
+              style={[styles.navItem, active && { backgroundColor: theme.colors.surface2 }]}
+            >
+              <Icon name={item.icon} size={15} color={color} />
+              <Text style={[styles.navLabel, { color }]}>{item.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <View style={styles.splitContent}>
+        <ScrollView style={styles.screen} contentContainerStyle={styles.screenContent}>
+          {sections}
+        </ScrollView>
+        <View style={[styles.saveBar, { borderTopColor: theme.colors.border }]}>
+          {saveArea}
+        </View>
+      </View>
     </View>
   );
 }
 
-export function InjectorSettingsScreen({ theme }: PluginSurfaceProps) {
+export function InjectorSettingsScreen({
+  theme,
+  tabbed,
+}: PluginSurfaceProps & { tabbed?: boolean }) {
   const settings = useSettings(injectorSettings);
   const mutedStyle = useMemo(() => ({ color: theme.colors.foregroundMuted }), [theme]);
 
@@ -423,14 +573,22 @@ export function InjectorSettingsScreen({ theme }: PluginSurfaceProps) {
       </SettingsSection>
     );
   }
-  return <Editor settings={settings} theme={theme} />;
+  return <Editor settings={settings} theme={theme} tabbed={tabbed} />;
 }
 
 /** 左侧菜单打开的全屏页：宿主不提供 padding 和滚动容器，这里自己补上。 */
 export function InjectorScreen({ theme, layout, host }: PluginSurfaceProps) {
+  // 紧凑布局（手机）空间不够，回退为整页滚动；宽屏用左侧分类 tab。
+  if (layout.compact) {
+    return (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.screenContent}>
+        <InjectorSettingsScreen theme={theme} layout={layout} host={host} />
+      </ScrollView>
+    );
+  }
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.screenContent}>
-      <InjectorSettingsScreen theme={theme} layout={layout} host={host} />
-    </ScrollView>
+    <View style={styles.screen}>
+      <InjectorSettingsScreen theme={theme} layout={layout} host={host} tabbed />
+    </View>
   );
 }
