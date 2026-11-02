@@ -16,6 +16,9 @@ import { tokenUsageListRpc, type TokenUsageListOutput } from "../shared/rpc";
 
 type Theme = PluginSurfaceProps["theme"];
 
+/** 面板打开期间自动刷新间隔；服务端只重采「今天」，成本很低。 */
+const AUTO_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+
 export function TokenUsageSurface(props: PluginSurfaceProps) {
   const { theme, layout } = props;
   const styles = useMemo(() => useStyles(theme, layout.compact), [theme, layout.compact]);
@@ -72,6 +75,16 @@ export function TokenUsageSurface(props: PluginSurfaceProps) {
 
   useEffect(() => {
     fetchPayload(false);
+  }, [fetchPayload]);
+
+  // 面板打开时定时刷新：强制重采（服务端按天缓存，只重读今天）。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      fetchPayload(true);
+    }, AUTO_REFRESH_INTERVAL_MS);
+    return () => {
+      clearInterval(timer);
+    };
   }, [fetchPayload]);
 
   const combined = useMemo(

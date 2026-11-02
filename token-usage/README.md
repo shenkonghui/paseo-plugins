@@ -53,7 +53,7 @@ Paseo 只会把这类请求当成「没有返回」,而 agent CLI 的本地数�
 > **Qoder 的 token 需要显式开启上报**:Qoder CLI 默认把 token 清零,只写 Credits。要让面板拿到真实 token,需给 CLI 进程加上环境变量——国内版 `QODERCN_EXPOSE_TOKEN_USAGE=1`,国际版 `QODER_EXPOSE_TOKEN_USAGE=1`(前缀不可互换),例如写进 `~/.paseo/config.json` 的 `agents.providers["qoder-cn"].env`。未开启时该 agent 仍会显示请求数、会话数和积分,但 token 维度为 0。
 > Qoder 的 Credits(积分)按**账单口径**统计:只累计 `billable !== false` 的请求,免费模型的请求(token 与请求数照计)不计入积分。
 
-采集在插件 server 进程内串行执行,yield gate 限制每个同步步的事件循环占用。按「所选窗口(今天 / 近 7 天 / 近 30 天) + 关闭采集的 agent 集合」分别采集并各自缓存 1 小时;快照落盘(`~/.paseo/plugin-cache/token-usage/usage-cache.json`,重启后秒开):打开页面只读缓存,过期时显示「缓存已过期」;只有点击 Surface 的「刷新」按钮才强制重新采集,不做任何后台主动采集。默认窗口是「今天」。
+采集在插件 server 进程内串行执行,yield gate 限制每个同步步的事件循环占用。用量**按天缓存**:每天一份桶(含会话 id 与按模型的明细),1 / 7 / 30 天窗口都由这些天拼装,所以切窗口不会重扫历史;只有「今天」会变,超过 TTL(1 小时)后标记「缓存已过期」,点「刷新」只重采今天。跨天时只补新的一天;首次看更长的窗口、或关掉采集一段时间后重新打开,会从缺口那天补到昨天。缓存落盘(`~/.paseo/plugin-cache/token-usage/usage-cache.json`,v2 格式),重启后秒开;清理会话后按天缓存整体失效并重新采集。默认窗口是「今天」;面板**打开期间每 10 分钟自动刷新一次**,面板关闭后不做任何后台采集。
 
 ## 磁盘占用与清理(均在 daemon 主机本地执行)
 
