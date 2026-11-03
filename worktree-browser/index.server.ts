@@ -1,6 +1,8 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   createWorktreeRpc,
+  listDirsRpc,
+  listSubmodulesRpc,
   listWorktreesRpc,
   removeWorktreeRpc,
   repoCommitFilesRpc,
@@ -16,6 +18,8 @@ import {
   getRepoOverview,
   getSubmoduleFileDiff,
   getSubmoduleFiles,
+  listSubmoduleDirs,
+  listTopDirs,
 } from "./server/git-submodules";
 import {
   createWorktree,
@@ -30,6 +34,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(createWorktreeRpc, (input) => createWorktree(input));
   server.handle(removeWorktreeRpc, (input) => removeWorktree(input));
   server.handle(repoOverviewRpc, ({ repoRoot }) => getRepoOverview(repoRoot));
+  server.handle(listSubmodulesRpc, ({ repoRoot }) => listSubmoduleDirs(repoRoot));
+  server.handle(listDirsRpc, ({ repoRoot }) => listTopDirs(repoRoot));
   server.handle(repoCommitFilesRpc, ({ repoRoot, sha }) => getCommitFiles(repoRoot, sha));
   server.handle(repoFileDiffRpc, ({ repoRoot, file, mode, sha }) =>
     getRepoFileDiff(repoRoot, file, mode, sha),

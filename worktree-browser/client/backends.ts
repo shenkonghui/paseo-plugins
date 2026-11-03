@@ -1,10 +1,12 @@
 import { parseWorktreePorcelain } from "../shared/porcelain";
-import type { Worktree } from "../shared/worktrees";
+import type { SubmoduleDir, TopDir, Worktree } from "../shared/worktrees";
 
 export interface WorktreeBackend {
   /** How git runs under this backend, surfaced in the UI. */
   readonly kind: "local" | "remote";
   listWorktrees(repoRoot: string): Promise<Worktree[]>;
+  listSubmodules(repoRoot: string): Promise<SubmoduleDir[]>;
+  listDirs(repoRoot: string): Promise<TopDir[]>;
   listBranches(repoRoot: string): Promise<{ currentBranch: string | null; branches: string[] }>;
   createWorktree(input: {
     repoRoot: string;
@@ -23,6 +25,8 @@ export interface WorktreeBackend {
 
 export interface LocalWorktreeRpc {
   listWorktrees(input: { repoRoot: string }): Promise<{ worktrees: Worktree[] }>;
+  listSubmodules(input: { repoRoot: string }): Promise<{ submodules: SubmoduleDir[] }>;
+  listDirs(input: { repoRoot: string }): Promise<{ dirs: TopDir[] }>;
   listBranches(input: { repoRoot: string }): Promise<{
     currentBranch: string | null;
     branches: string[];
@@ -48,6 +52,14 @@ export function createLocalBackend(rpc: LocalWorktreeRpc): WorktreeBackend {
     async listWorktrees(repoRoot) {
       const { worktrees } = await rpc.listWorktrees({ repoRoot });
       return worktrees;
+    },
+    async listSubmodules(repoRoot) {
+      const { submodules } = await rpc.listSubmodules({ repoRoot });
+      return submodules;
+    },
+    async listDirs(repoRoot) {
+      const { dirs } = await rpc.listDirs({ repoRoot });
+      return dirs;
     },
     listBranches: (repoRoot) => rpc.listBranches({ repoRoot }),
     createWorktree: (input) => rpc.createWorktree(input),
@@ -258,6 +270,37 @@ export function createRemoteBackend(getApi: () => RemotePaseoApi): WorktreeBacke
       const mtimes = parseMtimes(mtimeText);
       for (const worktree of worktrees) worktree.mtimeMs = mtimes.get(worktree.path) ?? null;
       return worktrees;
+    },
+    async listSubmodules(repoRoot) {
+      const output = await run(
+        repoRoot,
+        [
+          `git -C ${quote(repoRoot)} submodule status | while IFS= read -r __paseo_wb_line; do __paseo_wb_status=$(printf '%s' "$__paseo_wb_line" | cut -c1); __paseo_wb_path=$(printf '%s' "$__paseo_wb_line" | sed -E 's/^.[^ ]* +//; s/ +\\(.*\\)$//'); if [ -d ${quote(repoRoot)}"/$__paseo_wb_path" ]; then __paseo_wb_ex=1; else __paseo_wb_ex=0; fi; printf '%s\\t%s\\t%s\\n' "$__paseo_wb_status" "$__paseo_wb_path" "$__paseo_wb_ex"; done`,
+          `__paseo_wb_code=$?`,
+          `( exit $__paseo_wb_code )`,
+        ].join("\n"),
+      );
+      return output
+        .split("\n")
+        .filter((line) => line.includes("\t"))
+        .map((line) => {
+          const [status = " ", path = "", exists] = line.split("\t");
+          return { path, status: status === "" ? " " : status, exists: exists === "1" };
+        });
+    },
+    async listDirs(repoRoot) {
+      const output = await run(
+        repoRoot,
+        [
+          `cd ${quote(repoRoot)} && for __paseo_wb_d in */ ; do [ -d "$__paseo_wb_d" ] && printf '%s\\n' "\${__paseo_wb_d%/}"; done`,
+          `__paseo_wb_code=$?`,
+          `( exit $__paseo_wb_code )`,
+        ].join("\n"),
+      );
+      return output
+        .split("\n")
+        .filter(Boolean)
+        .map((path) => ({ path }));
     },
     async listBranches(repoRoot) {
       const output = await run(

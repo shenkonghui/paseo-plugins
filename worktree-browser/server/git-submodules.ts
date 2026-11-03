@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import type { RepoCommit, SubmoduleChange } from "../shared/worktrees";
+import { readdir, stat } from "node:fs/promises";
+import type { RepoCommit, SubmoduleChange, SubmoduleDir } from "../shared/worktrees";
 
 function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -37,6 +38,49 @@ export function parseSubmodulePaths(text: string): string[] {
     if (sha && path) paths.push(path);
   }
   return paths;
+}
+
+/** Parses `git submodule status` lines, keeping the leading status char. */
+export function parseSubmoduleStatus(text: string): { path: string; status: string }[] {
+  const entries: { path: string; status: string }[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    const rest = line.slice(1).trimStart();
+    const sha = rest.split(/\s/, 1)[0];
+    const path = rest
+      .slice(sha.length)
+      .trim()
+      .replace(/\s+\(.*\)$/, "");
+    if (path) entries.push({ path, status: line.slice(0, 1) });
+  }
+  return entries;
+}
+
+export async function listTopDirs(
+  repoRoot: string,
+): Promise<{ dirs: { path: string }[] }> {
+  const entries = await readdir(repoRoot, { withFileTypes: true }).catch(() => []);
+  const dirs = entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => ({ path: entry.name }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  return { dirs };
+}
+
+export async function listSubmoduleDirs(
+  repoRoot: string,
+): Promise<{ submodules: SubmoduleDir[] }> {
+  const text = await git(repoRoot, ["submodule", "status"]).catch(() => "");
+  const submodules = await Promise.all(
+    parseSubmoduleStatus(text).map(async ({ path, status }) => ({
+      path,
+      status,
+      exists: await stat(`${repoRoot}/${path}`)
+        .then((s) => s.isDirectory())
+        .catch(() => false),
+    })),
+  );
+  return { submodules };
 }
 
 /** Parses `git status --porcelain` lines into change entries. */

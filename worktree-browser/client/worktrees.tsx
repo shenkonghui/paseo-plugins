@@ -2,9 +2,11 @@ import * as pluginClient from "@getpaseo/plugin/client";
 import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Modal, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text, View, type DimensionValue } from "react-native";
 import {
   createWorktreeRpc,
+  listDirsRpc,
+  listSubmodulesRpc,
   listWorktreesRpc,
   removeWorktreeRpc,
   sanitizePathSegment,
@@ -22,19 +24,19 @@ import {
 type Theme = PluginSurfaceProps["theme"];
 type PaseoApi = ReturnType<typeof usePaseo>;
 
-interface ProjectOption {
+export interface ProjectOption {
   projectId: string;
   name: string;
   rootPath: string;
   kind: "git" | "non_git" | "directory";
 }
 
-interface WorkspaceLink {
+export interface WorkspaceLink {
   id: string;
   name: string;
 }
 
-interface HostSummary {
+export interface HostSummary {
   serverId: string;
   label: string;
   status: "idle" | "connecting" | "online" | "offline" | "error";
@@ -44,7 +46,7 @@ interface HostSummary {
  * `useHosts` / `getPaseoClient` are injected by the app's plugin runtime. They stay
  * optional so the surface still works on hosts that predate them.
  */
-const hostRuntime = pluginClient as unknown as {
+export const hostRuntime = pluginClient as unknown as {
   useHosts?: () => readonly HostSummary[];
   getPaseoClient?: (serverId: string) => PaseoApi;
 };
@@ -53,9 +55,9 @@ const EMPTY_HOSTS: readonly HostSummary[] = [];
 function useNoHosts(): readonly HostSummary[] {
   return EMPTY_HOSTS;
 }
-const useConfiguredHosts = hostRuntime.useHosts ?? useNoHosts;
+export const useConfiguredHosts = hostRuntime.useHosts ?? useNoHosts;
 
-function basename(path: string): string {
+export function basename(path: string): string {
   return path.split(/[\\/]/).findLast((part) => part.length > 0) ?? path;
 }
 
@@ -63,7 +65,7 @@ function shortHead(head: string | null): string | null {
   return head ? head.slice(0, 7) : null;
 }
 
-function formatRelativeTime(mtimeMs: number | null, now = Date.now()): string {
+export function formatRelativeTime(mtimeMs: number | null, now = Date.now()): string {
   if (mtimeMs == null) return "";
   const seconds = Math.max(0, Math.floor((now - mtimeMs) / 1000));
   if (seconds < 60) return "刚刚";
@@ -74,7 +76,7 @@ function formatRelativeTime(mtimeMs: number | null, now = Date.now()): string {
   return `${Math.floor(hours / 24)} 天前`;
 }
 
-function useProjects(getApi: () => PaseoApi) {
+export function useProjects(getApi: () => PaseoApi) {
   const [projects, setProjects] = useState<ProjectOption[] | null>(null);
 
   useEffect(() => {
@@ -104,7 +106,7 @@ function useProjects(getApi: () => PaseoApi) {
   return projects;
 }
 
-function useWorkspaceIndex(getApi: () => PaseoApi, nonce: number) {
+export function useWorkspaceIndex(getApi: () => PaseoApi, nonce: number) {
   const [index, setIndex] = useState<ReadonlyMap<string, WorkspaceLink>>(new Map());
 
   useEffect(() => {
@@ -164,7 +166,7 @@ function useWorktrees(backend: WorktreeBackend, repoRoot: string | null, nonce: 
   return { worktrees, error };
 }
 
-function useStyles(theme: Theme, compact: boolean) {
+export function useStyles(theme: Theme, compact: boolean) {
   return useMemo(
     () => ({
       screen: { flex: 1, backgroundColor: theme.colors.surface0 },
@@ -382,12 +384,130 @@ function useStyles(theme: Theme, compact: boolean) {
         justifyContent: "flex-end" as const,
         gap: 8,
       },
+      pageTitle: {
+        color: theme.colors.foreground,
+        fontSize: 20,
+        fontWeight: "700" as const,
+        paddingHorizontal: compact ? 12 : 20,
+        paddingTop: compact ? 12 : 20,
+      },
+      pillsRow: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        flexWrap: "wrap" as const,
+        gap: 8,
+        paddingHorizontal: compact ? 12 : 20,
+        paddingTop: 12,
+      },
+      pill: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 6,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 999,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        backgroundColor: theme.colors.surface1,
+        maxWidth: 280,
+      },
+      pillText: { color: theme.colors.foreground, fontSize: 13, fontWeight: "500" as const },
+      pillCaret: { color: theme.colors.foregroundMuted, fontSize: 11 },
+      pillAvatar: {
+        width: 18,
+        height: 18,
+        borderRadius: 5,
+        backgroundColor: theme.colors.accent,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+      },
+      pillAvatarText: {
+        color: theme.colors.accentForeground,
+        fontSize: 11,
+        fontWeight: "700" as const,
+      },
+      composer: {
+        marginHorizontal: compact ? 12 : 20,
+        marginTop: 14,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 12,
+        backgroundColor: theme.colors.surface1,
+        padding: 12,
+        gap: 10,
+      },
+      composerInput: {
+        color: theme.colors.foreground,
+        fontSize: 14,
+        minHeight: 90,
+        textAlignVertical: "top" as const,
+      },
+      composerToolbar: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        justifyContent: "space-between" as const,
+        gap: 8,
+      },
+      composerTools: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        flexWrap: "wrap" as const,
+        gap: 6,
+        flex: 1,
+      },
+      sendButton: {
+        width: 34,
+        height: 34,
+        borderRadius: 17,
+        backgroundColor: theme.colors.accent,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+      },
+      sendButtonText: { color: theme.colors.accentForeground, fontSize: 16, fontWeight: "700" as const },
+      belowComposer: { paddingHorizontal: compact ? 12 : 20, paddingTop: 12, gap: 8 },
+      pageColumn: {
+        width: "100%" as const,
+        maxWidth: 860,
+        alignSelf: "center" as const,
+        paddingBottom: 32,
+      },
+      dropdownAnchor: { position: "relative" as const, zIndex: 1 },
+      dropdownAnchorOpen: { zIndex: 50 },
+      dropdownMenu: {
+        position: "absolute" as const,
+        top: "100%" as DimensionValue,
+        left: 0,
+        marginTop: 6,
+        minWidth: 240,
+        maxWidth: 380,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface1,
+        paddingVertical: 4,
+        shadowColor: "#000",
+        shadowOpacity: 0.18,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 6 },
+        elevation: 8,
+        zIndex: 60,
+      },
+      dropdownScroll: { maxHeight: 300 },
+      sectionHeader: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      pickerBackdrop: {
+        position: "absolute" as const,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 40,
+      },
     }),
     [theme, compact],
   );
 }
 
-function ProjectChip({
+export function ProjectChip({
   project,
   selected,
   onSelect,
@@ -410,7 +530,7 @@ function ProjectChip({
   );
 }
 
-function HostChip({
+export function HostChip({
   host,
   selected,
   onSelect,
@@ -725,12 +845,24 @@ function CreateWorktreeModal({
 
 type WorkspacePlacement = "paseo" | "custom";
 
-interface ProviderChoice {
+export interface ProviderThinkingOption {
   id: string;
   label: string;
+  isDefault?: boolean;
 }
 
-function useProviderChoices(
+export interface ProviderChoice {
+  /** provider/model */
+  id: string;
+  label: string;
+  provider: string;
+  model: string;
+  isDefault: boolean;
+  thinkingOptions: ProviderThinkingOption[];
+  defaultThinkingOptionId: string | null;
+}
+
+export function useProviderChoices(
   paseo: ReturnType<typeof usePaseo>,
   cwd: string,
   enabled: boolean,
@@ -758,7 +890,19 @@ function useProviderChoices(
       for (const entry of models) {
         for (const model of entry.models) {
           if (model.isSelectable === false) continue;
-          next.push({ id: `${entry.provider}/${model.id}`, label: model.label });
+          next.push({
+            id: `${entry.provider}/${model.id}`,
+            label: model.label,
+            provider: entry.provider,
+            model: model.id,
+            isDefault: model.isDefault === true,
+            thinkingOptions: (model.thinkingOptions ?? []).map((option) => ({
+              id: option.id,
+              label: option.label,
+              isDefault: option.isDefault,
+            })),
+            defaultThinkingOptionId: model.defaultThinkingOptionId ?? null,
+          });
         }
       }
       setChoices(next);
@@ -1244,6 +1388,8 @@ function RemoveWorktreeModal({
 export function WorktreeSurface({ theme, host, layout, navigation }: PluginSurfaceProps) {
   const paseo = usePaseo();
   const listWorktrees = useRpc(listWorktreesRpc);
+  const listSubmodulesRpcFn = useRpc(listSubmodulesRpc);
+  const listDirsRpcFn = useRpc(listDirsRpc);
   const listBranchesRpcFn = useRpc(worktreeBranchesRpc);
   const createWorktreeRpcFn = useRpc(createWorktreeRpc);
   const removeWorktreeRpcFn = useRpc(removeWorktreeRpc);
@@ -1303,6 +1449,8 @@ export function WorktreeSurface({ theme, host, layout, navigation }: PluginSurfa
       isLocalHost
         ? createLocalBackend({
             listWorktrees,
+            listSubmodules: listSubmodulesRpcFn,
+            listDirs: listDirsRpcFn,
             listBranches: listBranchesRpcFn,
             createWorktree: createWorktreeRpcFn,
             removeWorktree: removeWorktreeRpcFn,
@@ -1312,6 +1460,8 @@ export function WorktreeSurface({ theme, host, layout, navigation }: PluginSurfa
       isLocalHost,
       getApi,
       listWorktrees,
+      listSubmodulesRpcFn,
+      listDirsRpcFn,
       listBranchesRpcFn,
       createWorktreeRpcFn,
       removeWorktreeRpcFn,

@@ -20,6 +20,20 @@ Non-main worktrees also offer "删除", which calls the `worktrees.remove` plugi
 optional "同时删除分支" toggle that runs `git branch -D` afterwards). Removing a worktree
 does not delete a Paseo workspace linked to it — delete that separately if it exists.
 
+## 选目录建工作区（dir-workspace surface）
+
+侧边栏「选目录建工作区」打开一个独立的新建工作区页（与 worktree 管理页无关），
+仿内置新建 workspace 布局：页面顶部是项目 / 主机 / 工作目录三个下拉 pill，
+「工作目录」列出该项目已有的目录作为 workspace 的 cwd —— 项目根目录、该 repo
+的全部 worktree、全部已检出子模块（未初始化 / 冲突 / 目录不存在的置灰不可选）。
+工作区标题取目录名。composer 工具条常驻三个下拉 pill：模型（`providers.listModels`）、
+思考强度（模型的 `thinkingOptions`）、权限模式（`providers.listModes`），选中值随
+`agents.create` 的 `config.modeId` / `config.thinkingOptionId` 下发。提示词可留空
+（只建 workspace），发送即 `paseo.workspaces.create`（source 为
+`{ kind: "directory", path, projectId }`，workspace 落在同一 project 下）再用
+`workspace.agents.create` 启动 agent。所选目录若已关联 workspace，composer 下方
+会出现「打开已有 workspace」入口。远程主机沿用本插件的临时终端执行 git。
+
 ## 新建工作区（自定义分支与路径）
 
 工具栏的 "+ 工作区" 按钮打开一个弹窗，让用户在创建工作区时直接指定分支名与存放路径：

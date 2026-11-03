@@ -136,3 +136,30 @@ export const submoduleFileDiffRpc = defineRpc({
   }),
   output: z.object({ diff: z.string() }),
 });
+
+export const SubmoduleDirSchema = z.object({
+  path: z.string(),
+  // `git submodule status` 的首字符：" "=已检出、"-"=未初始化、"+"=sha 偏离、"U"=冲突
+  status: z.string(),
+  exists: z.boolean(),
+});
+
+export type SubmoduleDir = z.infer<typeof SubmoduleDirSchema>;
+
+export const listSubmodulesRpc = defineRpc({
+  name: "worktrees.submodule-dirs",
+  input: z.object({ repoRoot: z.string() }),
+  output: z.object({ submodules: z.array(SubmoduleDirSchema) }),
+});
+
+export const TopDirSchema = z.object({
+  path: z.string(),
+});
+
+export type TopDir = z.infer<typeof TopDirSchema>;
+
+export const listDirsRpc = defineRpc({
+  name: "worktrees.dirs",
+  input: z.object({ repoRoot: z.string() }),
+  output: z.object({ dirs: z.array(TopDirSchema) }),
+});
