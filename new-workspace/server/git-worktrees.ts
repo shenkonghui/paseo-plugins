@@ -1,0 +1,112 @@
+import { execFile } from "node:child_process";
+import { mkdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { parseWorktreePorcelain } from "../shared/porcelain";
+import type { Worktree } from "../shared/worktrees";
+
+export { parseWorktreePorcelain };
+
+function runGit(repoRoot: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("git", ["-C", repoRoot, ...args], { timeout: 15000 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr.trim() || error.message));
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+async function mtime(path: string): Promise<number | null> {
+  try {
+    return (await stat(path)).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+export async function listWorktrees(repoRoot: string): Promise<{ worktrees: Worktree[] }> {
+  const worktrees = parseWorktreePorcelain(
+    await runGit(repoRoot, ["worktree", "list", "--porcelain"]),
+  );
+  await Promise.all(
+    worktrees.map(async (worktree) => {
+      worktree.mtimeMs = await mtime(worktree.path);
+    }),
+  );
+  return { worktrees };
+}
+
+export async function listBranches(
+  repoRoot: string,
+): Promise<{ currentBranch: string | null; branches: string[] }> {
+  const [current, raw] = await Promise.all([
+    runGit(repoRoot, ["branch", "--show-current"]).catch(() => ""),
+    runGit(repoRoot, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]),
+  ]);
+  return {
+    currentBranch: current.trim() || null,
+    branches: raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean),
+  };
+}
+
+/** Expands a leading `~` against the daemon host's home directory. */
+export function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/") || path.startsWith("~\\")) return join(homedir(), path.slice(2));
+  return path;
+}
+
+export interface CreateWorktreeInput {
+  repoRoot: string;
+  sourceBranch: string;
+  targetBranch: string;
+  directory: string;
+}
+
+export async function createWorktree(
+  input: CreateWorktreeInput,
+): Promise<{ path: string; branch: string }> {
+  const source = input.sourceBranch.trim();
+  const target = input.targetBranch.trim();
+  const directory = expandHome(input.directory.trim());
+  if (!source || !target || !directory) {
+    throw new Error("源分支、目标分支和目录均不能为空");
+  }
+  await mkdir(dirname(directory), { recursive: true });
+  await runGit(input.repoRoot, ["worktree", "add", "-b", target, directory, source]);
+  return { path: directory, branch: target };
+}
+
+export interface RemoveWorktreeInput {
+  repoRoot: string;
+  path: string;
+  force?: boolean;
+  deleteBranch?: boolean;
+}
+
+export async function removeWorktree(
+  input: RemoveWorktreeInput,
+): Promise<{ removed: string; branchDeleted: string | null }> {
+  const path = expandHome(input.path.trim());
+  if (!path) throw new Error("worktree 路径不能为空");
+  const { worktrees } = await listWorktrees(input.repoRoot);
+  const target = worktrees.find((worktree) => worktree.path === path);
+  if (!target) throw new Error(`不是该仓库的 worktree: ${path}`);
+  if (target.main) throw new Error("不能删除主 worktree");
+  await runGit(
+    input.repoRoot,
+    ["worktree", "remove", ...(input.force ? ["--force"] : []), path],
+  );
+  let branchDeleted: string | null = null;
+  if (input.deleteBranch && target.branch) {
+    await runGit(input.repoRoot, ["branch", "-D", target.branch]);
+    branchDeleted = target.branch;
+  }
+  return { removed: path, branchDeleted };
+}

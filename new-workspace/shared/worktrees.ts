@@ -1,0 +1,165 @@
+import { defineRpc } from "@getpaseo/plugin";
+import { z } from "zod";
+
+export const WorktreeSchema = z.object({
+  path: z.string(),
+  branch: z.string().nullable(),
+  head: z.string().nullable(),
+  bare: z.boolean(),
+  main: z.boolean(),
+  mtimeMs: z.number().nullable(),
+});
+
+export type Worktree = z.infer<typeof WorktreeSchema>;
+
+export const listWorktreesRpc = defineRpc({
+  name: "worktrees.list",
+  input: z.object({ repoRoot: z.string() }),
+  output: z.object({ worktrees: z.array(WorktreeSchema) }),
+});
+
+/** Makes a branch or project name safe as a single path segment. */
+export function sanitizePathSegment(name: string): string {
+  return name.trim().replace(/[\\/:*?"<>|\s]+/g, "_");
+}
+
+/**
+ * Mirrors the daemon's worktree slug rules so the UI can show the directory
+ * name a Paseo-managed worktree will actually get.
+ */
+export function slugifyWorktreeName(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (slug.length <= 50) return slug;
+  const truncated = slug.slice(0, 50);
+  const lastHyphen = truncated.lastIndexOf("-");
+  if (lastHyphen > 25) return truncated.slice(0, lastHyphen);
+  return truncated.replace(/-+$/, "");
+}
+
+export const worktreeBranchesRpc = defineRpc({
+  name: "worktrees.branches",
+  input: z.object({ repoRoot: z.string() }),
+  output: z.object({
+    currentBranch: z.string().nullable(),
+    branches: z.array(z.string()),
+  }),
+});
+
+export const createWorktreeRpc = defineRpc({
+  name: "worktrees.create",
+  input: z.object({
+    repoRoot: z.string(),
+    sourceBranch: z.string(),
+    targetBranch: z.string(),
+    directory: z.string(),
+  }),
+  output: z.object({ path: z.string(), branch: z.string() }),
+});
+
+export const removeWorktreeRpc = defineRpc({
+  name: "worktrees.remove",
+  input: z.object({
+    repoRoot: z.string(),
+    path: z.string(),
+    force: z.boolean().optional(),
+    deleteBranch: z.boolean().optional(),
+  }),
+  output: z.object({ removed: z.string(), branchDeleted: z.string().nullable() }),
+});
+
+export const SubmoduleChangeSchema = z.object({
+  code: z.string(),
+  path: z.string(),
+});
+
+export type SubmoduleChange = z.infer<typeof SubmoduleChangeSchema>;
+
+export const CommitSchema = z.object({
+  sha: z.string(),
+  subject: z.string(),
+  author: z.string(),
+  relativeDate: z.string(),
+});
+
+export type RepoCommit = z.infer<typeof CommitSchema>;
+
+export const repoOverviewRpc = defineRpc({
+  name: "worktrees.repo-overview",
+  input: z.object({ repoRoot: z.string() }),
+  output: z.object({
+    branch: z.string().nullable(),
+    changes: z.array(SubmoduleChangeSchema),
+    commits: z.array(CommitSchema),
+    submodulePaths: z.array(z.string()),
+  }),
+});
+
+export const repoCommitFilesRpc = defineRpc({
+  name: "worktrees.repo-commit-files",
+  input: z.object({ repoRoot: z.string(), sha: z.string() }),
+  output: z.object({ files: z.array(SubmoduleChangeSchema) }),
+});
+
+export const repoFileDiffRpc = defineRpc({
+  name: "worktrees.repo-file-diff",
+  input: z.object({
+    repoRoot: z.string(),
+    file: z.string(),
+    mode: z.enum(["worktree", "commit"]),
+    sha: z.string().optional(),
+  }),
+  output: z.object({ diff: z.string() }),
+});
+
+export const submoduleFilesRpc = defineRpc({
+  name: "worktrees.submodule-files",
+  input: z.object({
+    repoRoot: z.string(),
+    path: z.string(),
+    mode: z.enum(["worktree", "commit"]),
+    sha: z.string().optional(),
+  }),
+  output: z.object({ files: z.array(SubmoduleChangeSchema) }),
+});
+
+export const submoduleFileDiffRpc = defineRpc({
+  name: "worktrees.submodule-file-diff",
+  input: z.object({
+    repoRoot: z.string(),
+    path: z.string(),
+    file: z.string(),
+    mode: z.enum(["worktree", "commit"]),
+    sha: z.string().optional(),
+  }),
+  output: z.object({ diff: z.string() }),
+});
+
+export const SubmoduleDirSchema = z.object({
+  path: z.string(),
+  // `git submodule status` 的首字符：" "=已检出、"-"=未初始化、"+"=sha 偏离、"U"=冲突
+  status: z.string(),
+  exists: z.boolean(),
+});
+
+export type SubmoduleDir = z.infer<typeof SubmoduleDirSchema>;
+
+export const listSubmodulesRpc = defineRpc({
+  name: "worktrees.submodule-dirs",
+  input: z.object({ repoRoot: z.string() }),
+  output: z.object({ submodules: z.array(SubmoduleDirSchema) }),
+});
+
+export const TopDirSchema = z.object({
+  path: z.string(),
+});
+
+export type TopDir = z.infer<typeof TopDirSchema>;
+
+export const listDirsRpc = defineRpc({
+  name: "worktrees.dirs",
+  input: z.object({ repoRoot: z.string() }),
+  output: z.object({ dirs: z.array(TopDirSchema) }),
+});
