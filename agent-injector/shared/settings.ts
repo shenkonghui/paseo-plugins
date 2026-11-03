@@ -97,8 +97,6 @@ export const injectorSettings = defineSettings({
     autoTitleIntervalMinutes: z.number().int().min(0).max(1440).default(10),
     /** 自动标题时同步更新所在 workspace 的标题 */
     autoTitleWorkspace: z.boolean().default(false),
-    /** 自定义标题要求，替换内置的「要求：中文，不超过30字…」；留空用默认值 */
-    autoTitlePrompt: z.string().default(""),
   }),
 });
 

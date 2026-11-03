@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import type { PaseoApi } from "@getpaseo/client";
+import { dirname, join, resolve } from "node:path";
+import type { PaseoAgentHandle, PaseoApi } from "@getpaseo/client";
 import type {
   PluginHookAgent,
   PluginHookContext,
@@ -19,9 +19,12 @@ import { resolveInheritedConfig } from "./subagent-tools";
  */
 
 const HOUR_MS = 3_600_000;
-const MAX_MESSAGES = 12;
-const MAX_MESSAGE_CHARS = 600;
-const MAX_DIGEST_CHARS = 4_000;
+/** 标题看最近 5 轮对话：用户消息 + 助手回复；工具调用、思考、命令输出都不进 prompt。 */
+const DIGEST_TURNS = 5;
+const DIGEST_MESSAGE_CHARS = 600;
+const DIGEST_MAX_CHARS = 4_000;
+/** 分页取时间线，直到凑够 5 轮；工具调用多的会话要翻更早的页。 */
+const DIGEST_FETCH_LIMITS = [80, 240, 600] as const;
 const MAX_TITLE_CHARS = 30;
 const PROVISIONAL_TITLE_CHARS = 60;
 /** 每个 workspace 保留多少个插件写过的标题，用于区分手动改名与多 agent 覆盖 */
@@ -67,7 +70,7 @@ type AutoTitleState = {
 };
 
 type TimelineItem = { type: string; text?: string };
-type TimelineEntry = { item: TimelineItem };
+type TimelineEntry = { item: TimelineItem; turnId?: string };
 
 type PermissionRequest = PluginLifecycleEvents["agent.permission_requested"]["request"];
 
@@ -208,29 +211,158 @@ function findFirstUserText(entries: readonly TimelineEntry[]): string | null {
   return null;
 }
 
-function collectDigest(entries: readonly TimelineEntry[]): DigestMessage[] {
-  const messages: DigestMessage[] = [];
+/** 用户消息里常夹带粘贴的代码 / 日志；标题只需要意图，所以整块去掉。 */
+function stripAttachedContent(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/~~~[\s\S]*?~~~/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * 只收用户消息与助手回复，按 turnId 归轮取最近 5 轮；工具调用、思考、命令输出一律不进标题语料。
+ * 老宿主没有 turnId 时，按「一条用户消息开启一轮」兜底。
+ */
+function collectDigest(entries: readonly TimelineEntry[]): { messages: DigestMessage[]; turns: number } {
+  const messages: { key: string; message: DigestMessage }[] = [];
+  let fallbackTurn = 0;
   for (const entry of entries) {
     const item = entry.item;
     if (item.type !== "user_message" && item.type !== "assistant_message") continue;
     if (typeof item.text !== "string") continue;
-    const text = item.text.replace(/\s+/g, " ").trim();
+    if (item.type === "user_message") fallbackTurn += 1;
+    const text = stripAttachedContent(item.text);
     if (!text) continue;
     messages.push({
-      role: item.type === "user_message" ? "user" : "assistant",
-      text: text.slice(0, MAX_MESSAGE_CHARS),
+      key: entry.turnId ?? `turn-${fallbackTurn}`,
+      message: {
+        role: item.type === "user_message" ? "user" : "assistant",
+        text: text.slice(0, DIGEST_MESSAGE_CHARS),
+      },
     });
   }
 
-  const recent = messages.slice(-MAX_MESSAGES);
-  let total = 0;
-  let start = recent.length;
-  for (let index = recent.length - 1; index >= 0; index -= 1) {
-    total += recent[index]?.text.length ?? 0;
-    if (total > MAX_DIGEST_CHARS) break;
-    start = index;
+  const kept: { key: string; message: DigestMessage }[] = [];
+  let turns = 0;
+  let current: string | null = null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (!entry) break;
+    if (entry.key !== current) {
+      if (turns === DIGEST_TURNS) break;
+      turns += 1;
+      current = entry.key;
+    }
+    kept.unshift(entry);
   }
-  return recent.slice(start);
+
+  const digest: DigestMessage[] = [];
+  let retainedTurns = 0;
+  let total = 0;
+  let lastKey: string | null = null;
+  for (let index = kept.length - 1; index >= 0; index -= 1) {
+    const entry = kept[index];
+    if (!entry) break;
+    total += entry.message.text.length;
+    if (total > DIGEST_MAX_CHARS) break;
+    if (entry.key !== lastKey) {
+      retainedTurns += 1;
+      lastKey = entry.key;
+    }
+    digest.unshift(entry.message);
+  }
+  return { messages: digest, turns: retainedTurns };
+}
+
+interface TurnDigest {
+  messages: DigestMessage[];
+  /** 收进来的轮数，最多 5 轮。 */
+  turns: number;
+  /** 窗口内最早的一条用户消息；首次运行判手动改名时要用。 */
+  firstUserText: string | null;
+}
+
+/** 不够 5 轮就翻更大的窗口；没有更早的历史就停。 */
+async function loadDigest(agentHandle: PaseoAgentHandle): Promise<TurnDigest> {
+  let digest: TurnDigest = { messages: [], turns: 0, firstUserText: null };
+  for (const limit of DIGEST_FETCH_LIMITS) {
+    const timeline = await agentHandle.timeline
+      .refetch({ direction: "tail", limit })
+      .catch(() => null);
+    const entries = (timeline?.entries ?? []) as readonly TimelineEntry[];
+    const collected = collectDigest(entries);
+    digest = {
+      messages: collected.messages,
+      turns: collected.turns,
+      firstUserText: findFirstUserText(entries),
+    };
+    if (digest.turns >= DIGEST_TURNS || (digest.turns > 0 && timeline?.hasOlder === false)) {
+      break;
+    }
+  }
+  return digest;
+}
+
+const PROJECT_CONFIG_FILE = "paseo.json";
+
+/**
+ * 标题风格提示词跟着仓库走：读仓库根目录 `paseo.json` 的
+ * `metadataGeneration.title.instructions`，与 Paseo 自己生成 workspace 标题时用的是同一份配置。
+ * 它是「整体替换」语义，所以直接顶替内置的要求行；读不到就用内置默认。
+ */
+function resolveTitleInstructions(cwd: string): string | null {
+  const configRoot = findProjectConfigRoot(cwd);
+  if (!configRoot) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(configRoot, PROJECT_CONFIG_FILE), "utf8"));
+    const trimmed = readNestedString(parsed, ["metadataGeneration", "title", "instructions"])?.trim();
+    return trimmed ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 仓库根（含 `.git` 的目录；worktree 里 `.git` 是文件）优先，和 Paseo 的
+ * resolveRepoRoot 口径一致；不在 git 仓库里时，退回到向上找到的最近一个 paseo.json。
+ */
+function findProjectConfigRoot(cwd: string): string | null {
+  let dir = resolve(cwd);
+  let nearest: string | null = null;
+  for (;;) {
+    if (nearest === null && exists(join(dir, PROJECT_CONFIG_FILE))) {
+      nearest = dir;
+    }
+    if (exists(join(dir, ".git"))) {
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      return nearest;
+    }
+    dir = parent;
+  }
+}
+
+function exists(target: string): boolean {
+  try {
+    statSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readNestedString(value: unknown, keys: readonly string[]): string | null {
+  let current: unknown = value;
+  for (const key of keys) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return null;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "string" ? current : null;
 }
 
 function buildPrompt(input: {
@@ -243,13 +375,13 @@ function buildPrompt(input: {
     input.requirement?.trim() ||
     `要求：中文，不超过 ${MAX_TITLE_CHARS} 个字；点出正在做的具体任务；不要引号、句号、emoji；现有标题已经准确时可以沿用。`;
   const lines = [
-    "你是后台标题助手。根据下面这名 agent 的最近对话，为它拟一个简短标题。",
+    "你是后台标题助手。根据这名 agent 最近几轮的用户需求与助手产出，为它拟一个简短标题。",
     requirement,
     `然后调用 paseo 的 update_agent 工具写入结果：agentId="${input.agentId}"，name="<标题>"。`,
     "只调用一次 update_agent，不要读取文件、不要执行其它命令；完成后直接回复 done。",
   ];
   if (input.currentTitle) lines.push(`当前标题：${input.currentTitle}`);
-  lines.push("最近对话：");
+  lines.push("最近几轮对话：");
   for (const message of input.messages) {
     lines.push(`${message.role === "user" ? "用户" : "助手"}：${message.text}`);
   }
@@ -443,18 +575,14 @@ export async function handleAutoTitleTurnEnded(
     return;
   }
 
-  const timeline = await agentHandle.timeline
-    .refetch({ direction: "tail", limit: MAX_MESSAGES * 3 })
-    .catch(() => null);
-  const entries = (timeline?.entries ?? []) as readonly TimelineEntry[];
-  const messages = collectDigest(entries);
-  if (messages.length === 0) {
+  const digest = await loadDigest(agentHandle);
+  if (digest.messages.length === 0) {
     save(state);
     return;
   }
 
   const currentTitle = snapshot.title ?? null;
-  if (isManuallyRenamed(entry, currentTitle, findFirstUserText(entries))) {
+  if (isManuallyRenamed(entry, currentTitle, digest.firstUserText)) {
     entry.manual = true;
     save(state);
     log(`agent ${agent.id} 的标题被手动修改，停止自动标题`);
@@ -471,8 +599,8 @@ export async function handleAutoTitleTurnEnded(
       prompt: buildPrompt({
         agentId: agent.id,
         currentTitle,
-        messages,
-        requirement: values.autoTitlePrompt,
+        messages: digest.messages,
+        requirement: resolveTitleInstructions(snapshot.cwd) ?? undefined,
       }),
       config,
       autoArchive: true,

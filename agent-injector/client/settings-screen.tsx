@@ -451,7 +451,7 @@ function Editor({
       {show("autoTitle") ? (
       <SettingsSection
         title="自动标题"
-        info="agent 每完成一轮，按间隔创建一个一次性标题助手，读取最近对话后调用 update_agent 改名。插件无法直接改 agent 标题，只能由助手完成；workspace 标题由插件直接写入。"
+        info="agent 每完成一轮，按间隔创建一个一次性标题助手，读取最近 5 轮对话（不含工具调用）后调用 update_agent 改名。插件无法直接改 agent 标题，只能由助手完成；workspace 标题由插件直接写入。"
       >
         <SettingsCard>
           <SettingsSwitch
@@ -488,13 +488,8 @@ function Editor({
             disabled={disabled || !draft.values.enabled || !draft.values.autoTitleEnabled}
             onValueChange={(value) => update("autoTitleWorkspace", value)}
           />
-          <TextArea
-            label="自定义标题要求"
-            hint="替换内置的「要求：中文，不超过30字…」一行，可指定语言、字数、格式；update_agent 调用指令不受影响。留空用默认值"
-            value={draft.values.autoTitlePrompt}
-            placeholder="要求：中文，不超过 30 个字；点出正在做的具体任务；不要引号、句号、emoji"
-            editable={!disabled && draft.values.enabled && draft.values.autoTitleEnabled}
-            onChangeText={(text) => update("autoTitlePrompt", text)}
+          <StatusMessage
+            text="标题要求读所在仓库根目录 paseo.json 的 metadataGeneration.title.instructions（与 Paseo 生成 workspace 标题用的是同一份配置），读不到时用内置默认：中文、不超过 30 字。"
             theme={theme}
           />
           <StatusMessage
