@@ -1,0 +1,8 @@
+{
+  "id": "acp-adapt",
+  "name": "ACP 适配",
+  "description": "为 ACP 协议 agent 补齐子任务可见性：读取 Qoder/CodeBuddy 等 CLI 的本地任务存储，在 composer 上方显示子 agent 数量与状态",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}
