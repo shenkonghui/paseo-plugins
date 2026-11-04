@@ -671,7 +671,7 @@ function BranchRow({
   );
 }
 
-function CreateWorktreeModal({
+export function CreateWorktreeModal({
   open,
   backend,
   repoRoot,
@@ -685,13 +685,15 @@ function CreateWorktreeModal({
   repoRoot: string;
   projectName: string;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (path: string) => void;
   styles: ReturnType<typeof useStyles>;
 }) {
   const toast = useToast();
   const [branches, setBranches] = useState<string[] | null>(null);
   const [branchesError, setBranchesError] = useState<string | null>(null);
   const [source, setSource] = useState<string | null>(null);
+  const [branchOpen, setBranchOpen] = useState(false);
+  const [branchQuery, setBranchQuery] = useState("");
   const [target, setTarget] = useState("");
   const [directory, setDirectory] = useState("");
   const [dirDirty, setDirDirty] = useState(false);
@@ -712,6 +714,8 @@ function CreateWorktreeModal({
     setBranches(null);
     setBranchesError(null);
     setSource(null);
+    setBranchOpen(false);
+    setBranchQuery("");
     setTarget("");
     setDirectory(defaultDirectory(""));
     setDirDirty(false);
@@ -750,14 +754,14 @@ function CreateWorktreeModal({
     if (!source || !canSubmit) return;
     setSubmitting(true);
     try {
-      await backend.createWorktree({
+      const created = await backend.createWorktree({
         repoRoot,
         sourceBranch: source,
         targetBranch: target.trim(),
         directory: directory.trim(),
       });
       toast.show("worktree 已创建", { variant: "success" });
-      onCreated();
+      onCreated(created.path);
       onClose();
     } catch (failure) {
       toast.show(failure instanceof Error ? failure.message : String(failure), {
@@ -782,18 +786,50 @@ function CreateWorktreeModal({
       </Text>
     );
   } else if (branches) {
+    const needle = branchQuery.trim().toLowerCase();
+    const filtered = needle
+      ? branches.filter((branch) => branch.toLowerCase().includes(needle))
+      : branches;
     branchPicker = (
-      <ScrollView style={styles.branchList} keyboardShouldPersistTaps="handled">
-        {branches.map((branch) => (
-          <BranchRow
-            key={branch}
-            branch={branch}
-            selected={branch === source}
-            onSelect={setSource}
-            styles={styles}
-          />
-        ))}
-      </ScrollView>
+      <View style={[styles.dropdownAnchor, branchOpen && styles.dropdownAnchorOpen]}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setBranchOpen((value) => !value)}
+          style={styles.pill}
+        >
+          <Text style={styles.pillText} numberOfLines={1}>
+            {source ?? "选择源分支"}
+          </Text>
+          <Text style={styles.pillCaret}>{branchOpen ? "⌃" : "⌄"}</Text>
+        </Pressable>
+        {branchOpen ? (
+          <View style={styles.dropdownMenu}>
+            <TextInput
+              value={branchQuery}
+              onChangeText={setBranchQuery}
+              placeholder="过滤分支…"
+              placeholderTextColor={styles.mutedText.color}
+              style={[styles.searchInput, { margin: 8 }]}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <ScrollView style={styles.dropdownScroll} keyboardShouldPersistTaps="handled">
+              {filtered.map((branch) => (
+                <BranchRow
+                  key={branch}
+                  branch={branch}
+                  selected={branch === source}
+                  onSelect={(next) => {
+                    setSource(next);
+                    setBranchOpen(false);
+                  }}
+                  styles={styles}
+                />
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+      </View>
     );
   }
 

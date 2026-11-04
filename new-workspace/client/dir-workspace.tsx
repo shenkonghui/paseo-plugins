@@ -20,6 +20,7 @@ import {
 } from "./backends";
 import {
   basename,
+  CreateWorktreeModal,
   formatRelativeTime,
   hostRuntime,
   useConfiguredHosts,
@@ -124,6 +125,8 @@ function buildDirOptions(
   }
   return options;
 }
+
+const NEW_WORKTREE_KEY = "__new_worktree__";
 
 interface PickerItem {
   key: string;
@@ -435,6 +438,7 @@ export function DirWorkspaceSurface({ theme, host, layout, navigation }: PluginS
   const [thinkingId, setThinkingId] = useState<string | null>(null);
   const [modeId, setModeId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [nonce, setNonce] = useState(0);
   const [pickerState, setPickerState] = useState<{ id: string; rect: AnchorRect } | null>(null);
   const rootRef = useRef<View>(null);
@@ -628,13 +632,33 @@ export function DirWorkspaceSurface({ theme, host, layout, navigation }: PluginS
     }),
     [workspaceIndex],
   );
+  const newWorktreeItem: PickerItem = useMemo(
+    () => ({ key: NEW_WORKTREE_KEY, primary: "新建 worktree", secondary: "从分支新建 worktree 作为 cwd" }),
+    [],
+  );
+  const selectDirKey = useCallback(
+    (key: string) => {
+      if (key === NEW_WORKTREE_KEY) {
+        setCreateOpen(true);
+        return;
+      }
+      setSelected(key);
+    },
+    [],
+  );
   const worktreeItems = useMemo<readonly PickerItem[]>(
-    () => options.filter((option) => option.key.startsWith("wt:")).map(toPickerItem),
-    [options, toPickerItem],
+    () => [
+      ...(isGitProject ? [newWorktreeItem] : []),
+      ...options.filter((option) => option.key.startsWith("wt:")).map(toPickerItem),
+    ],
+    [options, toPickerItem, isGitProject, newWorktreeItem],
   );
   const subdirItems = useMemo<readonly PickerItem[]>(
-    () => options.filter((option) => !option.key.startsWith("wt:")).map(toPickerItem),
-    [options, toPickerItem],
+    () => [
+      ...(isGitProject ? [newWorktreeItem] : []),
+      ...options.filter((option) => !option.key.startsWith("wt:")).map(toPickerItem),
+    ],
+    [options, toPickerItem, isGitProject, newWorktreeItem],
   );
 
   const projectItems = useMemo<readonly PickerItem[]>(
@@ -730,13 +754,13 @@ export function DirWorkspaceSurface({ theme, host, layout, navigation }: PluginS
       items: worktreeItems,
       selectedKey: selectedOption?.key.startsWith("wt:") ? selectedOption.key : undefined,
       searchable: true,
-      onSelect: setSelected,
+      onSelect: selectDirKey,
     },
     dir: {
       items: subdirItems,
       selectedKey: selectedOption?.key.startsWith("wt:") ? undefined : selectedOption?.key,
       searchable: true,
-      onSelect: setSelected,
+      onSelect: selectDirKey,
     },
     provider: {
       items: providerItems,
@@ -950,6 +974,20 @@ export function DirWorkspaceSurface({ theme, host, layout, navigation }: PluginS
           onPick={(key) => {
             pickerSpecs[pickerState.id].onSelect(key);
             closePicker();
+          }}
+          styles={styles}
+        />
+      ) : null}
+      {project && isGitProject && repoRoot ? (
+        <CreateWorktreeModal
+          open={createOpen}
+          backend={backend}
+          repoRoot={repoRoot}
+          projectName={basename(repoRoot) || project.name}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(path) => {
+            setNonce((value) => value + 1);
+            setSelected(`wt:${path}`);
           }}
           styles={styles}
         />
