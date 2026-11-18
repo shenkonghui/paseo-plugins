@@ -1,0 +1,9 @@
+{
+  "id": "heartbeat-manager",
+  "name": "心跳管理",
+  "description": "管理 agent 心跳（agent 目标的心跳 schedule）：查看、新建、编辑、暂停/恢复、立即运行与删除。",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.13.0"
+  }
+}
