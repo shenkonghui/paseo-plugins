@@ -13,7 +13,7 @@ export interface WorktreeBackend {
     sourceBranch: string;
     targetBranch: string;
     directory: string;
-  }): Promise<{ path: string; branch: string }>;
+  }): Promise<{ path: string; branch: string; reusedBranch: boolean }>;
   removeWorktree(input: {
     repoRoot: string;
     path: string;
@@ -36,7 +36,7 @@ export interface LocalWorktreeRpc {
     sourceBranch: string;
     targetBranch: string;
     directory: string;
-  }): Promise<{ path: string; branch: string }>;
+  }): Promise<{ path: string; branch: string; reusedBranch: boolean }>;
   removeWorktree(input: {
     repoRoot: string;
     path: string;
@@ -112,6 +112,7 @@ const EXIT_SENTINEL = /__PASEO_WB_EXIT_(-?\d+)__/g;
 const MTIME_MARKER = "__PASEO_WB_MTIME__";
 const BRANCH_MARKER = "__PASEO_WB_BRANCHES__";
 const PATH_PREFIX = "__PASEO_WB_PATH__";
+const REUSE_MARKER = "__PASEO_WB_REUSED__";
 const POLL_INTERVAL_MS = 150;
 const COMMAND_TIMEOUT_MS = 60_000;
 
@@ -327,15 +328,23 @@ export function createRemoteBackend(getApi: () => RemotePaseoApi): WorktreeBacke
     async createWorktree({ repoRoot, sourceBranch, targetBranch, directory }) {
       const target = targetBranch.trim();
       const source = sourceBranch.trim();
+      // 目标分支已存在时直接复用（不带 -b 检出），否则从源分支新建。
       const output = await run(
         repoRoot,
         [
           `__paseo_wb_dir=${quote(directory.trim())}`,
           expandHomeShell("__paseo_wb_dir"),
           `mkdir -p "$(dirname -- "$__paseo_wb_dir")"`,
-          `git -C ${quote(repoRoot)} worktree add -b ${quote(target)} "$__paseo_wb_dir" ${quote(source)}`,
-          `__paseo_wb_code=$?`,
-          `if [ "$__paseo_wb_code" -eq 0 ]; then printf '\\n${PATH_PREFIX}%s\\n' "$__paseo_wb_dir"; fi`,
+          `if git -C ${quote(repoRoot)} rev-parse --verify --quiet ${quote(`refs/heads/${target}`)} >/dev/null; then`,
+          `  git -C ${quote(repoRoot)} worktree add "$__paseo_wb_dir" ${quote(target)}`,
+          `  __paseo_wb_code=$?`,
+          `  __paseo_wb_reused=1`,
+          `else`,
+          `  git -C ${quote(repoRoot)} worktree add -b ${quote(target)} "$__paseo_wb_dir" ${quote(source)}`,
+          `  __paseo_wb_code=$?`,
+          `  __paseo_wb_reused=0`,
+          `fi`,
+          `if [ "$__paseo_wb_code" -eq 0 ]; then printf '\\n${PATH_PREFIX}%s\\n%s%s\\n' "$__paseo_wb_dir" "${REUSE_MARKER}" "$__paseo_wb_reused"; fi`,
           `( exit $__paseo_wb_code )`,
         ].join("\n"),
       );
@@ -344,7 +353,8 @@ export function createRemoteBackend(getApi: () => RemotePaseoApi): WorktreeBacke
         marker === -1
           ? directory.trim()
           : output.slice(marker + PATH_PREFIX.length).split("\n")[0].trim();
-      return { path, branch: target };
+      const reuseLine = output.split("\n").find((line) => line.startsWith(REUSE_MARKER));
+      return { path, branch: target, reusedBranch: reuseLine === `${REUSE_MARKER}1` };
     },
     async removeWorktree({ repoRoot, path, branch, force, deleteBranch }) {
       const output = await run(

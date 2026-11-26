@@ -130,7 +130,7 @@ describe("createWorktree", () => {
       targetBranch: "feature/new",
       directory: dir,
     });
-    expect(result).toEqual({ path: dir, branch: "feature/new" });
+    expect(result).toEqual({ path: dir, branch: "feature/new", reusedBranch: false });
     expect(existsSync(join(dir, ".git"))).toBe(true);
     const sha = execFileSync(
       "git",
@@ -140,6 +140,49 @@ describe("createWorktree", () => {
       },
     );
     expect(sha.trim()).toHaveLength(40);
+  });
+
+  it("reuses an existing branch instead of failing with -b", async () => {
+    const repo = initRepo();
+    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    // 分支已存在但未被任何 worktree 占用：直接检出复用，不再报「分支已经存在」。
+    git(["branch", "feature/existing"]);
+    const before = git(["rev-parse", "refs/heads/feature/existing"]).trim();
+    const dir = `${repo}-reused`;
+    const result = await createWorktree({
+      repoRoot: repo,
+      sourceBranch: "HEAD",
+      targetBranch: "feature/existing",
+      directory: dir,
+    });
+    expect(result).toEqual({ path: dir, branch: "feature/existing", reusedBranch: true });
+    expect(existsSync(join(dir, ".git"))).toBe(true);
+    // 复用不移动分支指针，也不新建分支。
+    expect(git(["rev-parse", "refs/heads/feature/existing"]).trim()).toBe(before);
+    expect(
+      execFileSync("git", ["-C", dir, "branch", "--show-current"], { encoding: "utf8" }).trim(),
+    ).toBe("feature/existing");
+  });
+
+  it("surfaces a clear failure when the reused branch is checked out elsewhere", async () => {
+    const repo = initRepo();
+    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    git(["branch", "feature/taken"]);
+    const first = `${repo}-first`;
+    await createWorktree({
+      repoRoot: repo,
+      sourceBranch: "HEAD",
+      targetBranch: "feature/taken",
+      directory: first,
+    });
+    await expect(
+      createWorktree({
+        repoRoot: repo,
+        sourceBranch: "HEAD",
+        targetBranch: "feature/taken",
+        directory: `${repo}-second`,
+      }),
+    ).rejects.toThrow(/already used by worktree|already checked out|已被检出/);
   });
 
   it("creates missing parent directories", async () => {

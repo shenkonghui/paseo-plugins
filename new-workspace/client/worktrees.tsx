@@ -750,6 +750,8 @@ export function CreateWorktreeModal({
   }, []);
 
   const canSubmit = Boolean(source && target.trim() && directory.trim()) && !submitting;
+  // 目标分支已存在时自动复用：不新建分支，直接检出到新 worktree（源分支不生效）。
+  const reusingBranch = target.trim().length > 0 && (branches ?? []).includes(target.trim());
   const handleSubmit = useCallback(async () => {
     if (!source || !canSubmit) return;
     setSubmitting(true);
@@ -760,7 +762,10 @@ export function CreateWorktreeModal({
         targetBranch: target.trim(),
         directory: directory.trim(),
       });
-      toast.show("worktree 已创建", { variant: "success" });
+      toast.show(
+        created.reusedBranch ? `worktree 已创建（复用分支 ${created.branch}）` : "worktree 已创建",
+        { variant: "success" },
+      );
       onCreated(created.path);
       onClose();
     } catch (failure) {
@@ -838,7 +843,7 @@ export function CreateWorktreeModal({
       <Modal.Content>
         <Text style={styles.fieldLabel}>源分支</Text>
         {branchPicker}
-        <Text style={styles.fieldLabel}>目标分支（新分支名）</Text>
+        <Text style={styles.fieldLabel}>{reusingBranch ? "目标分支（复用已有分支）" : "目标分支（新分支名）"}</Text>
         <TextInput
           value={target}
           onChangeText={handleTargetChange}
@@ -846,6 +851,11 @@ export function CreateWorktreeModal({
           placeholderTextColor={styles.mutedText.color}
           style={styles.fieldInput}
         />
+        {reusingBranch ? (
+          <Text style={styles.hintText}>
+            分支 {target.trim()} 已存在，将直接检出到新 worktree，源分支选择不生效
+          </Text>
+        ) : null}
         <Text style={styles.fieldLabel}>worktree 目录</Text>
         <TextInput
           value={directory}
@@ -1054,6 +1064,8 @@ function CreateWorkspaceModal({
     (placement === "paseo" || Boolean(trimmedDirectory)) &&
     (prompt.trim().length === 0 || Boolean(providerId)) &&
     !submitting;
+  // 目标分支已存在时自动复用：不新建分支，直接检出到新 worktree（源分支不生效）。
+  const reusingBranch = trimmedBranch.length > 0 && (branches ?? []).includes(trimmedBranch);
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit || !baseBranch) return;
@@ -1064,15 +1076,24 @@ function CreateWorkspaceModal({
       if (placement === "paseo") {
         workspace = await paseo.workspaces.create({
           title: workspaceTitle,
-          source: {
-            kind: "worktree",
-            cwd: repoRoot,
-            projectId: project.projectId,
-            action: "branch-off",
-            refName: baseBranch,
-            branchName: trimmedBranch,
-            worktreeSlug: trimmedSlug,
-          },
+          source: reusingBranch
+            ? {
+                kind: "worktree",
+                cwd: repoRoot,
+                projectId: project.projectId,
+                action: "checkout",
+                refName: trimmedBranch,
+                worktreeSlug: trimmedSlug,
+              }
+            : {
+                kind: "worktree",
+                cwd: repoRoot,
+                projectId: project.projectId,
+                action: "branch-off",
+                refName: baseBranch,
+                branchName: trimmedBranch,
+                worktreeSlug: trimmedSlug,
+              },
         });
       } else {
         const created = await backend.createWorktree({
@@ -1131,6 +1152,7 @@ function CreateWorkspaceModal({
     toast,
     onCreated,
     onClose,
+    reusingBranch,
   ]);
 
   const handleOpenChange = useCallback(
@@ -1185,7 +1207,7 @@ function CreateWorkspaceModal({
         </View>
         <Text style={styles.fieldLabel}>源分支（基线）</Text>
         {branchPicker}
-        <Text style={styles.fieldLabel}>新分支名</Text>
+        <Text style={styles.fieldLabel}>{reusingBranch ? "目标分支（复用已有分支）" : "新分支名"}</Text>
         <TextInput
           value={branchName}
           onChangeText={handleBranchNameChange}
@@ -1195,6 +1217,11 @@ function CreateWorkspaceModal({
           autoCapitalize="none"
           autoCorrect={false}
         />
+        {reusingBranch ? (
+          <Text style={styles.hintText}>
+            分支 {trimmedBranch} 已存在，将直接检出到新 worktree，源分支选择不生效
+          </Text>
+        ) : null}
         {placement === "paseo" ? (
           <>
             <Text style={styles.fieldLabel}>worktree 目录名</Text>

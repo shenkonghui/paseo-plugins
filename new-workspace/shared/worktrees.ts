@@ -56,7 +56,12 @@ export const createWorktreeRpc = defineRpc({
     targetBranch: z.string(),
     directory: z.string(),
   }),
-  output: z.object({ path: z.string(), branch: z.string() }),
+  output: z.object({
+    path: z.string(),
+    branch: z.string(),
+    /** 目标分支已存在时直接复用（没有新建分支）。 */
+    reusedBranch: z.boolean().default(false),
+  }),
 });
 
 export const removeWorktreeRpc = defineRpc({

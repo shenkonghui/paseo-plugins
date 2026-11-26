@@ -69,9 +69,16 @@ export interface CreateWorktreeInput {
   directory: string;
 }
 
+/** 本地分支是否存在（只认 refs/heads，远端分支不算）。 */
+async function localBranchExists(repoRoot: string, branch: string): Promise<boolean> {
+  return runGit(repoRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])
+    .then(() => true)
+    .catch(() => false);
+}
+
 export async function createWorktree(
   input: CreateWorktreeInput,
-): Promise<{ path: string; branch: string }> {
+): Promise<{ path: string; branch: string; reusedBranch: boolean }> {
   const source = input.sourceBranch.trim();
   const target = input.targetBranch.trim();
   const directory = expandHome(input.directory.trim());
@@ -79,8 +86,15 @@ export async function createWorktree(
     throw new Error("源分支、目标分支和目录均不能为空");
   }
   await mkdir(dirname(directory), { recursive: true });
-  await runGit(input.repoRoot, ["worktree", "add", "-b", target, directory, source]);
-  return { path: directory, branch: target };
+  // 目标分支已存在时直接复用（不带 -b 检出到新 worktree），否则从源分支新建。
+  const reused = await localBranchExists(input.repoRoot, target);
+  await runGit(
+    input.repoRoot,
+    reused
+      ? ["worktree", "add", directory, target]
+      : ["worktree", "add", "-b", target, directory, source],
+  );
+  return { path: directory, branch: target, reusedBranch: reused };
 }
 
 export interface RemoveWorktreeInput {
