@@ -41,7 +41,14 @@ export interface AgentUsageCache {
 }
 
 const CACHE_VERSION = 2;
-const AGENT_IDS: readonly TokenUsageAgentId[] = ["codebuddy", "pi", "opencode", "devin", "qoder"];
+const AGENT_IDS: readonly TokenUsageAgentId[] = [
+  "codebuddy",
+  "pi",
+  "opencode",
+  "devin",
+  "qoder",
+  "claude",
+];
 const AGENT_STATUSES: readonly TokenUsageAgent["status"][] = [
   "available",
   "unavailable",

@@ -6,6 +6,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createYieldGate } from "../yield-gate.js";
 import { windowCutoffMs } from "../day-window.js";
 import { issueCutoffMs } from "../issues.js";
+import { ClaudeCollector } from "./claude.js";
 import { CodebuddyCollector } from "./codebuddy.js";
 import { DevinCollector } from "./devin.js";
 import { collectDevinRows as collectDevin } from "./devin-worker.js";
@@ -324,6 +325,55 @@ describe("DevinCollector", () => {
     expect(agent.models?.[0]?.model).toBe("devin-model");
   });
 
+  it("counts each message_id once across duplicated tree nodes", async () => {
+    const dedupDataHome = path.join(tempRoot, "dedup-data");
+    const dbDir = path.join(dedupDataHome, "devin", "cli");
+    fs.mkdirSync(dbDir, { recursive: true });
+    const Database = await sqliteModule();
+    const db = new Database(path.join(dbDir, "sessions.db"));
+    db.exec(`create table sessions (id text primary key, model text, last_activity_at integer);
+      create table message_nodes (session_id text, created_at integer, chat_message text)`);
+    const nowMs = Date.now();
+    const createdSec = Math.floor((localMidnight(nowMs) + 3_600_000) / 1000);
+    db.prepare("insert into sessions values (?, ?, ?)").run("s1", "devin-model", createdSec);
+    const insert = db.prepare("insert into message_nodes values (?, ?, ?)");
+    const metrics = (mid: string, input: number) =>
+      JSON.stringify({
+        message_id: mid,
+        metadata: { metrics: { input_tokens: input, output_tokens: 1 } },
+      });
+    // The same logical message is stored on three tree nodes — count it once.
+    insert.run("s1", createdSec, metrics("m1", 10));
+    insert.run("s1", createdSec, metrics("m1", 10));
+    insert.run("s1", createdSec, metrics("m1", 10));
+    insert.run("s1", createdSec, metrics("m2", 20));
+    db.close();
+
+    const previousDataHome = process.env.XDG_DATA_HOME;
+    process.env.XDG_DATA_HOME = dedupDataHome;
+    let result: Awaited<ReturnType<typeof collectDevin>>;
+    try {
+      result = await collectDevin({
+        homeDir: tempRoot,
+        cutoffMs: localMidnight(nowMs),
+      });
+    } finally {
+      process.env.XDG_DATA_HOME = previousDataHome;
+    }
+    expect(result).toEqual([
+      {
+        sessionId: "s1",
+        model: "devin-model",
+        timestampSec: createdSec,
+        requests: 2,
+        inputTokens: 30,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
   it("buckets calls on the host-local calendar day", async () => {
     // A call at 18:24 in UTC+8: adding the timezone offset before localDayKey
     // (which applies it again) pushed it onto the following day.
@@ -602,6 +652,159 @@ describe("QoderCollector", () => {
     const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-qoder-"));
     try {
       const { agent } = await new QoderCollector().collect({
+        ...makeContext(Date.now()),
+        homeDir: isolated,
+      });
+      expect(agent.status).toBe("unavailable");
+    } finally {
+      fs.rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ClaudeCollector", () => {
+  it("dedupes split assistant entries by message.id and skips synthetic ones", async () => {
+    const projectsDir = path.join(tempRoot, ".claude", "projects", "proj");
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const nowMs = Date.now();
+    const todayTs = new Date(localMidnight(nowMs) + 3_600_000).toISOString();
+    const oldTs = new Date(nowMs - 40 * 86_400_000).toISOString();
+    const line = (id: string, usage: object, timestamp = todayTs) =>
+      JSON.stringify({
+        type: "assistant",
+        timestamp,
+        sessionId: "session-a",
+        message: { id, model: "claude-test", usage },
+      });
+    const usage = {
+      input_tokens: 100,
+      output_tokens: 10,
+      cache_read_input_tokens: 5,
+      cache_creation_input_tokens: 2,
+      output_tokens_details: { thinking_tokens: 3 },
+    };
+    fs.writeFileSync(
+      path.join(projectsDir, "session-a.jsonl"),
+      [
+        JSON.stringify({ type: "user", timestamp: todayTs }),
+        // 同一条 API 响应按 content block 拆成多行：id 相同、usage 相同，只记一次。
+        line("msg_1", usage),
+        line("msg_1", usage),
+        line("msg_2", { input_tokens: 7, output_tokens: 1 }),
+        // 失败请求的替身条目：usage 全 0 但不是真实调用，跳过。
+        JSON.stringify({
+          type: "assistant",
+          timestamp: todayTs,
+          isApiErrorMessage: true,
+          message: { id: "syn_1", model: "<synthetic>", usage: { input_tokens: 0, output_tokens: 0 } },
+        }),
+        // 窗口之外的调用不计入。
+        line("msg_old", { input_tokens: 999, output_tokens: 999 }, oldTs),
+      ].join("\n"),
+    );
+    // fork 出的新会话会复制历史条目：跨文件同 id 仍然只记一次，新调用照计。
+    fs.writeFileSync(
+      path.join(projectsDir, "session-b.jsonl"),
+      [
+        line("msg_1", usage),
+        JSON.stringify({
+          type: "assistant",
+          timestamp: todayTs,
+          sessionId: "session-b",
+          message: { id: "msg_3", model: "claude-test", usage: { input_tokens: 1, output_tokens: 1 } },
+        }),
+      ].join("\n"),
+    );
+
+    const { agent } = await new ClaudeCollector().collect(makeContext(nowMs));
+
+    expect(agent.status).toBe("available");
+    expect(agent.totals.inputTokens).toBe(108);
+    expect(agent.totals.outputTokens).toBe(12);
+    expect(agent.totals.cacheReadTokens).toBe(5);
+    expect(agent.totals.cacheWriteTokens).toBe(2);
+    expect(agent.totals.reasoningTokens).toBe(3);
+    // 总量含缓存读写：100+10+5+2 + 7+1 + 1+1 = 127。
+    expect(agent.totals.totalTokens).toBe(127);
+    expect(agent.totals.requests).toBe(3);
+    expect(agent.sessions).toBe(2);
+    expect(agent.models?.[0]?.model).toBe("claude-test");
+    expect(agent.hours).toEqual([
+      expect.objectContaining({ hour: 1, requests: 3, sessions: 2 }),
+    ]);
+    expect(agent.sources).toEqual(["~/.claude/projects"]);
+  });
+
+  it("turns system api_error entries into aggregated issues", async () => {
+    const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-claude-"));
+    const projectsDir = path.join(isolated, ".claude", "projects", "issues");
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const nowMs = Date.now();
+    const todayTs = new Date(localMidnight(nowMs) + 3_600_000).toISOString();
+    const apiError = (error: object, extra?: object) =>
+      JSON.stringify({
+        type: "system",
+        subtype: "api_error",
+        level: "error",
+        timestamp: todayTs,
+        sessionId: "s1",
+        error,
+        ...extra,
+      });
+    fs.writeFileSync(
+      path.join(projectsDir, "s1.jsonl"),
+      [
+        apiError(
+          {
+            message: "Connection error.",
+            formatted: "Connection closed before the response finished",
+            connection: { code: "StreamTruncated", message: "Stream ended early" },
+            isNetworkDown: false,
+          },
+          { retryInMs: 500, retryAttempt: 1 },
+        ),
+        apiError({
+          message: '502 {"error":{"message":"upstream exploded"}}',
+          status: 502,
+          formatted: "502 upstream exploded",
+        }),
+        // 昨天（仍在 24 小时内但已跨天）：不算今天的失败。
+        JSON.stringify({
+          type: "system",
+          subtype: "api_error",
+          level: "error",
+          timestamp: new Date(localMidnight(nowMs) - 3_600_000).toISOString(),
+          error: { status: 429, formatted: "429 rate limited" },
+        }),
+      ].join("\n"),
+    );
+
+    try {
+      const { agent } = await new ClaudeCollector().collect({
+        ...makeContext(nowMs),
+        homeDir: isolated,
+      });
+
+      expect(agent.totals.totalTokens).toBe(0);
+      expect(agent.issues.map((issue) => issue.kind).sort()).toEqual(["network", "upstream"]);
+      const network = agent.issues.find((issue) => issue.kind === "network");
+      expect(network).toMatchObject({
+        retryable: true,
+        sessionId: "s1",
+        count: 1,
+      });
+      expect(network?.message).toBe("Connection closed before the response finished");
+      const upstream = agent.issues.find((issue) => issue.kind === "upstream");
+      expect(upstream).toMatchObject({ httpStatus: 502, retryable: null });
+    } finally {
+      fs.rmSync(isolated, { recursive: true, force: true });
+    }
+  });
+
+  it("reports unavailable when the data root is missing", async () => {
+    const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "token-usage-claude-empty-"));
+    try {
+      const { agent } = await new ClaudeCollector().collect({
         ...makeContext(Date.now()),
         homeDir: isolated,
       });

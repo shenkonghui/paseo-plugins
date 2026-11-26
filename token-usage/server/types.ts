@@ -4,7 +4,7 @@ export interface TokenUsageLogger {
 }
 
 /** Wire shape of one agent's usage snapshot. Mirrors shared/rpc.ts schemas. */
-export type TokenUsageAgentId = "codebuddy" | "pi" | "opencode" | "devin" | "qoder";
+export type TokenUsageAgentId = "codebuddy" | "pi" | "opencode" | "devin" | "qoder" | "claude";
 
 export interface TokenUsageCounters {
   inputTokens: number;

@@ -30,7 +30,14 @@ export const tokenUsageModelSchema = z.object({
   ...tokenUsageCountersSchema.shape,
 });
 
-export const tokenUsageAgentIdSchema = z.enum(["codebuddy", "pi", "opencode", "devin", "qoder"]);
+export const tokenUsageAgentIdSchema = z.enum([
+  "codebuddy",
+  "pi",
+  "opencode",
+  "devin",
+  "qoder",
+  "claude",
+]);
 
 /**
  * 失败事件的归类。CodeBuddy / OpenCode 能给出结构化错误，其余 agent 目前拿不到，

@@ -38,6 +38,10 @@ const LATEST_ACTIVITY_QUERY = `
   from sessions
 `;
 
+// message_nodes is a tree: the same logical message is stored on multiple
+// nodes (branches/continuations), so identical metrics repeat ~3x per row.
+// Dedupe by chat_message.message_id (fall back to rowid when absent) before
+// summing, otherwise every call is counted once per stored copy.
 const USAGE_QUERY = `
   with recent as materialized (
     select id from sessions where last_activity_at >= ?
@@ -45,11 +49,14 @@ const USAGE_QUERY = `
   calls as materialized (
     select
       m.session_id as session_id,
-      m.created_at as created_at,
-      json_extract(m.chat_message, '$.metadata.metrics') as metrics
+      coalesce(json_extract(m.chat_message, '$.message_id'), 'row:' || m.rowid) as mid,
+      min(m.created_at) as created_at,
+      max(json_extract(m.chat_message, '$.metadata.metrics')) as metrics
     from message_nodes m
     join recent r on r.id = m.session_id
     where m.created_at >= ?
+      and m.chat_message like '%"metrics"%'
+    group by m.session_id, mid
   )
   select
     session_id as session_id,

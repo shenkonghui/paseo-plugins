@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { TokenUsageLogger, TokenUsageAgent, TokenUsageAgentId } from "./types.js";
 import type { TokenUsageCollectContext, TokenUsageCollector } from "./collector.js";
+import { ClaudeCollector } from "./collectors/claude.js";
 import { CodebuddyCollector } from "./collectors/codebuddy.js";
 import { DevinCollector } from "./collectors/devin.js";
 import { OpencodeCollector } from "./collectors/opencode.js";
@@ -42,6 +43,7 @@ export function createTokenUsageCollectors(): TokenUsageCollector[] {
     new OpencodeCollector(),
     new DevinCollector(),
     new QoderCollector(),
+    new ClaudeCollector(),
   ];
 }
 

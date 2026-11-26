@@ -1,4 +1,5 @@
 import path from "node:path";
+import { claudeRoots } from "../claude-roots.js";
 import { codebuddyHomes } from "../codebuddy-roots.js";
 import { createFileSessionStorage, createMergedFileSessionStorage } from "./file-sessions.js";
 import { createQoderStorage } from "./qoder-sessions.js";
@@ -32,6 +33,19 @@ export function createStorageTargets(): TokenUsageStorageTarget[] {
     new OpencodeStorage(),
     new DevinStorage(),
     createQoderStorage(),
+    createMergedFileSessionStorage({
+      agentId: "claude",
+      displayName: "Claude",
+      // 默认 ~/.claude；CLAUDE_CONFIG_DIR 指到别处时一并统计。
+      roots: (homeDir) =>
+        claudeRoots(homeDir).map((home) => ({
+          rootDir: home,
+          sessionsDir: path.join(home, "projects"),
+        })),
+      extension: ".jsonl",
+      // 会话的 tool-results 等产物放在同名 <uuid>/ 目录里。
+      includeSiblingDirs: true,
+    }),
   ];
 }
 

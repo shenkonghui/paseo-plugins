@@ -23,6 +23,7 @@ Token 监控面板:读取本机各 agent CLI 自己的本地数据,汇总展示 
 | OpenCode | XDG data 下 opencode 的 SQLite(`session_message`;1.19 用 `message` 表) | `node:sqlite` 只读 keyset 分页,按表是否存在自动选择 |
 | Devin | XDG data 下 `devin/cli/sessions.db` | `node:sqlite` 只读物化 CTE 聚合(2GB 级库,一次扫描) |
 | Qoder | `~/.qoder-cn/projects/**/*.jsonl`(国内版) + `~/.qoder/projects/**/*.jsonl`(国际版) | JSONL 行扫描(`message.usage`,含 `<uuid>/subagents/*.jsonl`,按 `request_id` 去重) |
+| Claude | `~/.claude/projects/**/*.jsonl`(或 `$CLAUDE_CONFIG_DIR/projects`) | JSONL 行扫描(`message.usage`,同一响应的拆分行按 `message.id` 去重) |
 
 ### 失败事件(限流 / 额度 / 鉴权 等)
 
@@ -32,6 +33,7 @@ Paseo 只会把这类请求当成「没有返回」,而 agent CLI 的本地数�
 | --- | --- | --- |
 | CodeBuddy | `providerData.error`(`code` / `status` / `message` / `isRetryable` / `isNetworkError` / `isStreamTimeout`) | 是 |
 | OpenCode | `session_message.data.error`(`type` / `message` / `status` / `response.body`);1.19 的 `message.data.error`(`name` / `data.message` / `data.statusCode` / `data.isRetryable`) | 是 |
+| Claude | `system`/`api_error` 条目的 `error`(`message` / `formatted` / `status` / `connection` / `isNetworkDown`,每次重试一条) | 是 |
 | Pi / Qoder / Devin | 没有结构化错误字段 | 否(issues 恒为空) |
 
 每条聚合记录固定为这些字段(拿不到的维度是 `null`,不虚构):
@@ -68,6 +70,7 @@ Paseo 只会把这类请求当成「没有返回」,而 agent CLI 的本地数�
 | OpenCode | `$XDG_DATA_HOME/opencode` | 删除 `session_v2` 中 30 天前的会话(外键级联删消息等),再 `VACUUM` 回收空间 |
 | Devin | `$XDG_DATA_HOME/devin` | 删除 `sessions` 中 30 天前的会话及其子表行,再 `VACUUM` 回收空间 |
 | Qoder | `~/.qoder-cn` + `~/.qoder`(两个数据根合并统计) | 删除 30 天前的 `projects/**/*.jsonl` 及其同名附属目录(`<uuid>/`,含 `subagents/`) |
+| Claude | `~/.claude`(及 `$CLAUDE_CONFIG_DIR`,合并统计) | 删除 30 天前的 `projects/**/*.jsonl` 及其同名附属目录(`<uuid>/`,含 `tool-results/`) |
 
 「过期」以会话最后一次活动时间为准(文件型取文件 mtime,数据库型取 `time_updated` / `last_activity_at`),因此 30 天内活跃过的会话不会被删。已在运行中的 agent 会话(包括当前会话)通常属于最近活动,不会被清理。数据库型 agent 的「预计可释放」按会话数比例估算,清理后给出 VACUUM 前后的实际差值;Devin 的库接近 GB 级,VACUUM 可能耗时较久。
 
