@@ -10,6 +10,8 @@ import {
 } from "./server/queue-state";
 import { injectorSettings } from "./shared/settings";
 import { queueStatusRpc, resetQueueFailuresRpc } from "./shared/queue-status";
+import { processesSnapshotRpc, processOutputRpc } from "./shared/processes";
+import { readProcessesSnapshot, readProcessOutput } from "./server/processes";
 import { providerAllowed } from "./server/inject";
 
 export default function contributeServer(server: PluginServerContext) {
@@ -65,6 +67,14 @@ export default function contributeServer(server: PluginServerContext) {
   server.handle(resetQueueFailuresRpc, async (input) => ({
     cleared: clearFailures(input.keys),
   }));
+
+  // agent 进程树：按 PASEO_AGENT_ID 认领 CLI 进程，再收集它的后代进程。
+  server.handle(processesSnapshotRpc, async (input) =>
+    readProcessesSnapshot(input.agentIds),
+  );
+
+  // 子进程 stdout / stderr 的尾部（仅当 fd 重定向到普通文件时可读）。
+  server.handle(processOutputRpc, async (input) => readProcessOutput(input));
 
   // 标题助手只为调用 update_agent 而生：自动放行该权限，其它请求直接拒绝。
   // 否则助手会停在 permission 状态，本回合不结束，后续自动标题也会被占位挡住。

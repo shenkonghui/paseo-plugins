@@ -60,7 +60,7 @@ export function isInheritEntry(entry: SubagentQueueEntry): entry is SubagentInhe
   return "inherit" in entry && entry.inherit === true;
 }
 
-export const SUBAGENT_CONFIG_MODES = ["inherit", "custom"] as const;
+export const SUBAGENT_CONFIG_MODES = ["inherit", "custom", "profile"] as const;
 
 export const injectorSettings = defineSettings({
   id: "injector",
@@ -83,7 +83,7 @@ export const injectorSettings = defineSettings({
     subagentEnabled: z.boolean().default(true),
     /** 是否暴露 create_subagent 工具 */
     subagentCreateTool: z.boolean().default(true),
-    /** 子代理默认配置来源：继承父 agent，或按自定义队列 */
+    /** 子代理默认配置来源：继承父 agent / 按自定义队列 / 调用方自选（限定 daemon agentProfiles） */
     subagentConfigMode: z.enum(SUBAGENT_CONFIG_MODES).default("inherit"),
     /** 自定义队列 JSON（数组，按优先级从上到下） */
     subagentModelQueue: z.string().default("[]"),
@@ -97,6 +97,8 @@ export const injectorSettings = defineSettings({
     autoTitleIntervalMinutes: z.number().int().min(0).max(1440).default(10),
     /** 自动标题时同步更新所在 workspace 的标题 */
     autoTitleWorkspace: z.boolean().default(false),
+    /** 首轮完成后，若标题助手改了 agent 标题，则同步写一次 workspace 标题 */
+    autoTitleWorkspaceFirstTurn: z.boolean().default(false),
   }),
 });
 

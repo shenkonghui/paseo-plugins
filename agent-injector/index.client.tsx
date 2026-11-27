@@ -1,6 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { InjectorSidebarItem } from "./client/sidebar-item";
 import { InjectorScreen, InjectorSettingsScreen } from "./client/settings-screen";
+import { contributeAgentProcesses } from "./client/processes-pill";
 
 export default function contributeClient(client: PluginClientContext) {
   // 左侧菜单栏入口（render 在 Workspaces 上方的 sidebar header）
@@ -29,5 +30,10 @@ export default function contributeClient(client: PluginClientContext) {
     },
   });
 
-  return () => {};
+  // 每个 agent 的 composer 上方加「后台进程 N」pill，点开看进程树。
+  const disposeProcesses = contributeAgentProcesses(client);
+
+  return () => {
+    disposeProcesses();
+  };
 }

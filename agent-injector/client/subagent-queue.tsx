@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
 import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { Modal, SettingsAction, SettingsSelect } from "@getpaseo/plugin/client/ui";
+import { Modal } from "@getpaseo/plugin/client/react-native";
+import { SettingsAction, SettingsSelect } from "@getpaseo/plugin/client/ui";
 import {
   isInheritEntry,
   parseSubagentQueue,

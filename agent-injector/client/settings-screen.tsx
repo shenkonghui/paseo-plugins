@@ -8,12 +8,14 @@ import {
 import {
   Icon,
   ScrollView,
+  TextInput,
+} from "@getpaseo/plugin/client/react-native";
+import {
   SettingsAction,
   SettingsCard,
   SettingsSection,
   SettingsSelect,
   SettingsSwitch,
-  TextInput,
 } from "@getpaseo/plugin/client/ui";
 import {
   injectorSettings,
@@ -406,11 +408,12 @@ function Editor({
           />
           <SettingsSelect
             label="新建子代理的默认配置"
-            hint="继承 = 复用父 agent 的 provider/model/mode/thinking；自定义 = 按下方队列（可拖动排序）取第一个可用项"
+            hint="继承 = 复用父 agent 的 provider/model/mode/thinking；自定义 = 按下方队列（可拖动排序）取第一个可用项；profile = 调用方传参自选，限定 daemon agentProfiles"
             value={draft.values.subagentConfigMode}
             options={[
               { label: "继承父 agent", value: "inherit" },
               { label: "自定义模型队列", value: "custom" },
+              { label: "Agent profile（调用方自选）", value: "profile" },
             ]}
             disabled={disabled || !draft.values.enabled || !draft.values.subagentEnabled}
             onValueChange={(value) => update("subagentConfigMode", value)}
@@ -436,7 +439,11 @@ function Editor({
             </>
           ) : (
             <StatusMessage
-              text="当前继承父 agent；队列配置会保留但不生效。"
+              text={
+                draft.values.subagentConfigMode === "profile"
+                  ? "调用方在 create_subagent 里传 profileId 或 provider/model 自选，仅允许命中 daemon 配置的 agentProfiles；队列配置会保留但不生效。"
+                  : "当前继承父 agent；队列配置会保留但不生效。"
+              }
               theme={theme}
             />
           )}
@@ -480,6 +487,13 @@ function Editor({
             editable={!disabled && draft.values.enabled && draft.values.autoTitleEnabled}
             onChange={(value) => update("autoTitleIntervalMinutes", value)}
             theme={theme}
+          />
+          <SettingsSwitch
+            label="首轮完成后同步 workspace 标题"
+            hint="第一轮对话结束后，若标题助手改了 agent 标题则同步改写 workspace 一次；独立于下方的持续同步开关"
+            value={draft.values.autoTitleWorkspaceFirstTurn}
+            disabled={disabled || !draft.values.enabled || !draft.values.autoTitleEnabled}
+            onValueChange={(value) => update("autoTitleWorkspaceFirstTurn", value)}
           />
           <SettingsSwitch
             label="同步更新 workspace 标题"

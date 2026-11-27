@@ -18,15 +18,27 @@ export type ChildConfig = {
   featureValues?: Record<string, unknown>;
 };
 
-type ConfigSource = "inherit" | "custom";
+type ConfigSource = "inherit" | "custom" | "profile";
 
 const createSubagentInput = z.object({
   title: z.string().trim().min(1).max(60).describe("子代理的简短标题（<= 60 字）"),
   prompt: z.string().trim().min(1).describe("子代理创建后立即执行的第一个任务"),
   configMode: z
-    .enum(["inherit", "custom"])
+    .enum(["inherit", "custom", "profile"])
     .optional()
-    .describe('配置来源：inherit 继承父 agent，custom 使用插件里配置的模型队列。默认取插件设置'),
+    .describe(
+      "配置来源：inherit 继承父 agent；custom 使用插件里配置的模型队列；" +
+        "profile 由调用方自选（profileId 或 provider/model），限定在 daemon 配置的 agentProfiles 内。默认取插件设置",
+    ),
+  profileId: z
+    .string()
+    .optional()
+    .describe("agent profile 的 id 或 name（configMode=profile 时用；可用 list_profiles 查看）"),
+  provider: z
+    .string()
+    .optional()
+    .describe("provider 或 provider/model（configMode=profile 时用，须命中某个 agent profile）"),
+  model: z.string().optional().describe("与 provider 联用指定模型（configMode=profile 时）"),
   modeId: z.string().optional().describe("覆盖会话模式（仅在该 provider 支持时使用）"),
   thinkingOptionId: z.string().optional().describe("覆盖思考档位"),
 });
@@ -284,11 +296,65 @@ async function resolveQueueEntry(
   };
 }
 
+type ProfilePick = { profileId?: string; provider?: string; model?: string };
+
+function describeProfiles(profiles: readonly { id: string; name: string; provider: string; model?: string }[]): string {
+  return profiles
+    .map((entry) => `${entry.id}（${entry.name}，${entry.provider}${entry.model ? `/${entry.model}` : ""}）`)
+    .join("、");
+}
+
+/**
+ * profile 模式：调用方在 create_subagent 入参里自选配置，但只允许命中
+ * daemon 配置（config.agentProfiles）里的 agent profile；命中后整份
+ * provider/model/modeId/thinkingOptionId/featureValues 都取自该 profile。
+ */
+async function resolveProfileConfig(paseo: PaseoApi, pick: ProfilePick): Promise<ChildConfig> {
+  const { config: daemonConfig } = await paseo.config.get();
+  const profiles = daemonConfig.agentProfiles ?? [];
+  if (profiles.length === 0) {
+    throw new Error("profile 模式：daemon 未配置任何 agent profile（config.agentProfiles 为空）");
+  }
+
+  let matched: (typeof profiles)[number] | undefined;
+  if (pick.profileId) {
+    matched = profiles.find((entry) => entry.id === pick.profileId || entry.name === pick.profileId);
+    if (!matched) {
+      throw new Error(
+        `profile 模式：没有 id/name 为 "${pick.profileId}" 的 agent profile；可选：${describeProfiles(profiles)}`,
+      );
+    }
+  } else if (pick.provider) {
+    const parsed = splitProviderModel(pick.provider);
+    const wantModel = pick.model ?? parsed.model;
+    matched = profiles.find(
+      (entry) => entry.provider === parsed.provider && (!wantModel || entry.model === wantModel),
+    );
+    if (!matched) {
+      throw new Error(
+        `profile 模式：provider=${parsed.provider}${wantModel ? ` model=${wantModel}` : ""} 不在 agent profile 内；可选：${describeProfiles(profiles)}`,
+      );
+    }
+  } else {
+    throw new Error(
+      `profile 模式：请传入 profileId 或 provider/model；可选：${describeProfiles(profiles)}`,
+    );
+  }
+
+  return {
+    provider: matched.model ? `${matched.provider}/${matched.model}` : matched.provider,
+    modeId: matched.modeId,
+    thinkingOptionId: matched.thinkingOptionId,
+    featureValues: matched.featureValues,
+  };
+}
+
 async function resolveChildConfig(
   paseo: PaseoApi,
   parent: PaseoAgent,
   values: InjectorValues,
-  requestedMode: "inherit" | "custom" | undefined,
+  requestedMode: "inherit" | "custom" | "profile" | undefined,
+  pick?: ProfilePick,
 ): Promise<{
   config: ChildConfig;
   source: ConfigSource;
@@ -297,6 +363,15 @@ async function resolveChildConfig(
   skipped: number;
 }> {
   const mode = requestedMode ?? values.subagentConfigMode;
+
+  if (mode === "profile") {
+    return {
+      config: await resolveProfileConfig(paseo, pick ?? {}),
+      source: "profile",
+      key: null,
+      skipped: 0,
+    };
+  }
 
   if (mode === "custom") {
     const { entries } = parseSubagentQueue(values.subagentModelQueue);
@@ -329,8 +404,9 @@ export function createSubagentTool(values: InjectorValues) {
     title: "Create subagent",
     description:
       "Create a subagent that inherits your provider/model/mode/thinking/features by default. " +
-      "The plugin may instead use a priority-ordered model queue. Provide title and prompt; " +
-      "configMode/modeId/thinkingOptionId are optional overrides. Returns immediately.",
+      "The plugin may instead use a priority-ordered model queue, or let you pick any entry " +
+      "from the daemon's agentProfiles (configMode=profile with profileId or provider/model). " +
+      "Provide title and prompt; configMode/modeId/thinkingOptionId are optional overrides. Returns immediately.",
     input: createSubagentInput,
     async execute(input, context): Promise<AgentToolResult> {
       const parentHandle = context.paseo.agents.ref(context.agent.id);
@@ -340,12 +416,17 @@ export function createSubagentTool(values: InjectorValues) {
         return { text: `找不到父 agent ${context.agent.id} 的当前配置`, isError: true };
       }
 
-      const { config, source, key, skipped } = await resolveChildConfig(
-        context.paseo,
-        parent,
-        values,
-        input.configMode,
-      );
+      let resolved: Awaited<ReturnType<typeof resolveChildConfig>>;
+      try {
+        resolved = await resolveChildConfig(context.paseo, parent, values, input.configMode, {
+          profileId: input.profileId,
+          provider: input.provider,
+          model: input.model,
+        });
+      } catch (error) {
+        return { text: errorMessage(error), isError: true };
+      }
+      const { config, source, key, skipped } = resolved;
       if (input.modeId) config.modeId = input.modeId;
       if (input.thinkingOptionId) {
         const parsed = splitProviderModel(config.provider);
@@ -367,7 +448,8 @@ export function createSubagentTool(values: InjectorValues) {
           config,
         });
         if (key) markPendingAgent(child.id, key);
-        const sourceLabel = source === "custom" ? "自定义队列" : "继承父 agent";
+        const sourceLabel =
+          source === "custom" ? "自定义队列" : source === "profile" ? "agent profile" : "继承父 agent";
         return {
           text:
             `已创建子 agent ${child.id}（配置来源：${sourceLabel}，provider=${config.provider}` +

@@ -60,6 +60,8 @@ type PendingHelper = {
   workspaceId: string | null;
   /** 助手运行前的标题，用于判断助手是否真的改了名 */
   beforeTitle: string | null;
+  /** 目标 agent 的首轮完成后调度的助手；首轮同步写 workspace 标题用它判定 */
+  firstTurn?: boolean;
   createdAt: number;
 };
 
@@ -309,15 +311,41 @@ const PROJECT_CONFIG_FILE = "paseo.json";
 /**
  * 标题风格提示词跟着仓库走：读仓库根目录 `paseo.json` 的
  * `metadataGeneration.title.instructions`，与 Paseo 自己生成 workspace 标题时用的是同一份配置。
+ * worktree / 子模块没有自己的 paseo.json 时，顺着 `.git` 文件回落到主检出的 paseo.json。
  * 它是「整体替换」语义，所以直接顶替内置的要求行；读不到就用内置默认。
  */
 function resolveTitleInstructions(cwd: string): string | null {
   const configRoot = findProjectConfigRoot(cwd);
   if (!configRoot) return null;
+  const direct = readInstructionsAt(configRoot);
+  if (direct !== null) return direct;
+  const mainRoot = resolveLinkedWorktreeRoot(configRoot);
+  return mainRoot && mainRoot !== configRoot ? readInstructionsAt(mainRoot) : null;
+}
+
+function readInstructionsAt(dir: string): string | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(join(configRoot, PROJECT_CONFIG_FILE), "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(join(dir, PROJECT_CONFIG_FILE), "utf8"));
     const trimmed = readNestedString(parsed, ["metadataGeneration", "title", "instructions"])?.trim();
     return trimmed ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `.git` 是文件时（`git worktree add` 的 linked worktree、`git submodule`），
+ * 顺着 `gitdir:` → `commondir` 找回主检出的工作区根；普通仓库（`.git` 是目录）返回 null。
+ */
+function resolveLinkedWorktreeRoot(repoRoot: string): string | null {
+  const dotgit = join(repoRoot, ".git");
+  try {
+    if (!statSync(dotgit).isFile()) return null;
+    const pointer = readFileSync(dotgit, "utf8").trim();
+    if (!pointer.startsWith("gitdir:")) return null;
+    const gitdir = resolve(repoRoot, pointer.slice("gitdir:".length).trim());
+    const commondir = readFileSync(join(gitdir, "commondir"), "utf8").trim();
+    return dirname(resolve(gitdir, commondir));
   } catch {
     return null;
   }
@@ -431,7 +459,10 @@ async function finishHelper(
   entry.lastTitle = title;
 
   const changed = title !== helper.beforeTitle;
-  if (changed && values.autoTitleWorkspace && helper.workspaceId) {
+  const syncWorkspace =
+    values.autoTitleWorkspace ||
+    (helper.firstTurn === true && values.autoTitleWorkspaceFirstTurn);
+  if (changed && syncWorkspace && helper.workspaceId) {
     const workspaceEntry = getWorkspaceEntry(state, helper.workspaceId);
     if (!workspaceEntry.manual) {
       const workspaceHandle = paseo.workspaces.ref(helper.workspaceId);
@@ -609,6 +640,7 @@ export async function handleAutoTitleTurnEnded(
       agentId: agent.id,
       workspaceId: snapshot.workspaceId ?? null,
       beforeTitle: currentTitle,
+      firstTurn: entry.turns === 1,
       createdAt: now,
     };
   } catch (error) {
