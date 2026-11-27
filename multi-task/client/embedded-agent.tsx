@@ -6,8 +6,32 @@ import { dispatchShortcut } from "./shortcut";
 
 type Theme = PluginScreenProps["theme"];
 
-/** 在内嵌视图中屏蔽的 ⌘ 组合键（小写）。 */
-const BLOCKED_META_KEYS = new Set(["e", "l"]);
+/** 断流的修饰键属性（KeyEventLike 上本来就有的三个 + getModifierState）。 */
+const NEUTERED_MOD_PROPS = ["metaKey", "ctrlKey", "altKey"] as const;
+const NEUTERED_MOD_STATES = new Set(["Meta", "Control", "Alt", "AltGraph"]);
+/** getModifierState 包装器上的标记：重复安装时认出自己的包装，避免自我递归。 */
+const NEUTERED_GMS_FLAG = "__mtNeuteredGetModifierState";
+
+type RealModGetter = ((this: unknown) => unknown) | null;
+
+/** 注入的恒 false getter：命名成独立函数，重复安装时能认出它不是「真实」修饰键。 */
+function neuteredFalse(this: unknown): boolean {
+  return false;
+}
+
+/** 沿原型链找属性描述符：修饰键是访问器属性，未必定义在 KeyboardEvent.prototype 本身上。 */
+function findPropertyDescriptor(
+  proto: Record<string, unknown>,
+  name: string,
+): PropertyDescriptor | undefined {
+  let cur: Record<string, unknown> | null = proto;
+  while (cur) {
+    const descriptor = Object.getOwnPropertyDescriptor(cur, name);
+    if (descriptor) return descriptor;
+    cur = Object.getPrototypeOf(cur) as Record<string, unknown> | null;
+  }
+  return undefined;
+}
 
 /** app 给会话输入框打的标记（`dataSet={{ composerInput: "" }}`），用来确认回车发生在输入框里。 */
 const COMPOSER_INPUT_ATTR = "data-composer-input";
@@ -49,7 +73,14 @@ interface EmbedComposerElement {
 /** 只藏左侧栏：命中的容器打上这个属性，由注入的样式隐藏（!important 压过 React 的内联样式）。 */
 const HIDE_ATTR = "data-multi-task-hide-left";
 const STYLE_ID = "multi-task-embed-styles";
-const EMBED_CSS = `[${HIDE_ATTR}]{display:none!important}`;
+/**
+ * 除容器标记外还固定隐藏两块：
+ * - `#agent-list-gesture-host`：紧凑形态下左侧任务列表的抽屉宿主（快捷键 / 菜单按钮 /
+ *   边缘手势都只是翻转状态，宿主 display:none 后任何途径都打不开）；
+ * - `[data-testid="menu-button"]`：header 上打开任务列表的按钮。
+ */
+const EMBED_CSS = `[${HIDE_ATTR}]{display:none!important}` +
+  `#agent-list-gesture-host,[data-testid="menu-button"]{display:none!important}`;
 /** 左侧栏容器宽度上限：从 resize 手柄往上走，超过这个宽度就说明到主区域了。 */
 const SIDEBAR_MAX_WIDTH = 460;
 
@@ -81,33 +112,116 @@ interface EmbedObserverLike {
 }
 
 /**
- * 在 iframe 的 window 上捕获 keydown：
- * 1. 转发插件自己的快捷键（焦点在 iframe 里时按键不会冒泡到宿主，只能在这里代转）；
- * 2. 吃掉指定的 ⌘ 组合键。
- * 捕获阶段早于 app 的冒泡监听，stopImmediatePropagation 让它收不到。
- * 返回清理函数。跨源或 Electron 主进程级菜单加速键无法拦截。
+ * 内嵌实例里禁用 app 快捷键。
+ *
+ * 不能靠「抢事件」：app 的 keydown 监听挂在 iframe window 的捕获阶段（use-keyboard-shortcuts.ts
+ * 里 `window.addEventListener("keydown", …, true)`）、注册得比我们早，同目标同阶段按注册
+ * 顺序执行，`stopImmediatePropagation` 永远轮不到。改从输入侧断流——把 iframe realm 的
+ * KeyboardEvent.prototype 上 metaKey/ctrlKey/altKey 的 getter 与 getModifierState 全部改写成
+ * false，app 的 JS 快捷键匹配（监听顺序无关）永远看不到修饰键。
+ *
+ * 浏览器层行为不经 JS：⌘C 复制、⌘V 粘贴、⌘A 全选、Alt+方向按词移动、⌘⇧方向选词都保留；
+ * MouseEvent/PointerEvent 不动，⇧/⌘+点击等指针逻辑不受影响。卸载时恢复原描述符。
+ * 返回清理函数。跨源拿不到 realm 会安全跳过；Electron 主进程级菜单加速键本来也拦不到。
  */
 function installFrameKeys(win: unknown): () => void {
   if (!win || typeof win !== "object") return () => {};
+  const realm = win as { KeyboardEvent?: { prototype?: Record<string, unknown> } };
+  const proto = realm.KeyboardEvent?.prototype;
   const target = win as EmbedWindow;
+  if (!proto || typeof target.addEventListener !== "function") return () => {};
+
+  // --- 1) realm 级修饰键断流，同时留存原始 getter 供我们自己的快捷键读真实值 ---
+  const realGetters = new Map<string, RealModGetter>();
+  const ownDescriptors = new Map<string, PropertyDescriptor | undefined>();
+  for (const name of NEUTERED_MOD_PROPS) {
+    const inherited = findPropertyDescriptor(proto, name);
+    realGetters.set(name, inherited?.get && inherited.get !== neuteredFalse ? inherited.get : null);
+    ownDescriptors.set(name, Object.getOwnPropertyDescriptor(proto, name));
+    try {
+      Object.defineProperty(proto, name, {
+        configurable: true,
+        enumerable: inherited?.enumerable ?? true,
+        get: neuteredFalse,
+      });
+    } catch {
+      // 改不动就跳过，等效于放行该修饰键。
+    }
+  }
+  type GetModifierState = ((this: unknown, key: string) => boolean) & {
+    [NEUTERED_GMS_FLAG]?: boolean;
+  };
+  const protoMethods = proto as { getModifierState?: GetModifierState };
+  const getModifierStateWasOwn = Object.prototype.hasOwnProperty.call(proto, "getModifierState");
+  const realGetModifierState = protoMethods.getModifierState;
+  if (typeof realGetModifierState === "function" && !realGetModifierState[NEUTERED_GMS_FLAG]) {
+    const real = realGetModifierState;
+    try {
+      const wrapped: GetModifierState = function (this: unknown, key: string): boolean {
+        if (NEUTERED_MOD_STATES.has(key)) return false;
+        return real.call(this, key);
+      };
+      wrapped[NEUTERED_GMS_FLAG] = true;
+      protoMethods.getModifierState = wrapped;
+    } catch {
+      // ignore
+    }
+  }
+
+  const readRealMod = (name: string, event: KeyEventLike): boolean => {
+    const getter = realGetters.get(name);
+    return getter ? getter.call(event) === true : false;
+  };
+
+  // --- 2) 插件自己的快捷键（⌘⇧M）仍要转发到宿主：用原始 getter 读真实修饰键 ---
   const handler = (event: KeyEventLike) => {
-    if (dispatchShortcut(event)) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
+    if (
+      !dispatchShortcut({
+        key: event.key,
+        metaKey: readRealMod("metaKey", event),
+        ctrlKey: readRealMod("ctrlKey", event),
+        shiftKey: event.shiftKey === true,
+        altKey: readRealMod("altKey", event),
+      })
+    ) {
       return;
     }
-    if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-    const key = typeof event.key === "string" ? event.key.toLowerCase() : "";
-    if (!BLOCKED_META_KEYS.has(key)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
   try {
     target.addEventListener("keydown", handler, true);
   } catch {
-    return () => {};
+    // 监听器装不上就只保留断流。
   }
-  return () => target.removeEventListener("keydown", handler, true);
+
+  return () => {
+    try {
+      target.removeEventListener("keydown", handler, true);
+    } catch {
+      // ignore
+    }
+    for (const name of NEUTERED_MOD_PROPS) {
+      const previous = ownDescriptors.get(name);
+      try {
+        if (previous) Object.defineProperty(proto, name, previous);
+        else Reflect.deleteProperty(proto, name);
+      } catch {
+        // 恢复失败也无所谓：实例只会被本插件复用或销毁。
+      }
+    }
+    if (typeof realGetModifierState === "function") {
+      try {
+        if (getModifierStateWasOwn && !realGetModifierState[NEUTERED_GMS_FLAG]) {
+          protoMethods.getModifierState = realGetModifierState;
+        } else {
+          Reflect.deleteProperty(proto, "getModifierState");
+        }
+      } catch {
+        // ignore
+      }
+    }
+  };
 }
 
 /** 从 composer 根节点里找「发送」按钮：它是工具栏右侧的最后一个按钮。 */

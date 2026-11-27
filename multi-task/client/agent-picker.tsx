@@ -24,7 +24,10 @@ interface WorkspacePickerProps {
   workspaces: PaseoWorkspace[] | null;
   agents: PaseoAgent[] | null;
   existingWorkspaceIds: ReadonlySet<string>;
+  /** 已在窗口里但被隐藏的 workspace：弹窗里直接恢复，不用先关掉它去找「已隐藏」下拉。 */
+  hiddenWorkspaceIds: ReadonlySet<string>;
   onAdd: (workspaceId: string) => void;
+  onRestore: (workspaceId: string) => void;
 }
 
 export function WorkspacePicker({
@@ -34,7 +37,9 @@ export function WorkspacePicker({
   workspaces,
   agents,
   existingWorkspaceIds,
+  hiddenWorkspaceIds,
   onAdd,
+  onRestore,
 }: WorkspacePickerProps) {
   const [query, setQuery] = useState("");
 
@@ -77,6 +82,13 @@ export function WorkspacePicker({
     [onAdd],
   );
 
+  const handleRestore = useCallback(
+    (workspaceId: string) => {
+      onRestore(workspaceId);
+    },
+    [onRestore],
+  );
+
   return (
     <Modal title="添加 workspace" open={open} onOpenChange={onOpenChange}>
       <Modal.Content>
@@ -108,13 +120,21 @@ export function WorkspacePicker({
           <ScrollView style={{ maxHeight: 360 }}>
             {rows.map((row) => {
               const added = existingWorkspaceIds.has(row.workspace.id);
+              // 已添加但被隐藏：行仍可点，点了就是恢复，而不是「已添加」的死行。
+              const hidden = hiddenWorkspaceIds.has(row.workspace.id);
               return (
                 <Pressable
                   key={row.workspace.id}
                   accessibilityRole="button"
-                  accessibilityLabel={`添加 workspace ${row.label}${row.running ? "（运行中）" : ""}`}
-                  disabled={added}
-                  onPress={() => handleAdd(row.workspace.id)}
+                  accessibilityLabel={
+                    hidden
+                      ? `恢复已隐藏的 workspace ${row.label}`
+                      : `添加 workspace ${row.label}${row.running ? "（运行中）" : ""}`
+                  }
+                  disabled={added && !hidden}
+                  onPress={() =>
+                    hidden ? handleRestore(row.workspace.id) : handleAdd(row.workspace.id)
+                  }
                   style={{
                     borderWidth: 1,
                     // 运行中的用 accent 描边 + 状态点，一眼可分。
@@ -123,7 +143,7 @@ export function WorkspacePicker({
                     paddingHorizontal: 10,
                     paddingVertical: 8,
                     marginBottom: 6,
-                    opacity: added ? 0.5 : 1,
+                    opacity: added && !hidden ? 0.5 : 1,
                   }}
                 >
                   <View
@@ -145,6 +165,12 @@ export function WorkspacePicker({
                     >
                       {row.label}
                     </Text>
+                    {hidden ? (
+                      <>
+                        <View style={{ flex: 1 }} />
+                        <Text style={{ color: theme.colors.accent, fontSize: 12 }}>恢复</Text>
+                      </>
+                    ) : null}
                   </View>
                   <Text
                     style={{
@@ -154,11 +180,13 @@ export function WorkspacePicker({
                     }}
                     numberOfLines={1}
                   >
-                    {added
-                      ? "已添加"
-                      : row.running
-                        ? `运行中 · ${row.agentCount} 个 agent`
-                        : `${row.agentCount} 个 agent`}
+                    {hidden
+                      ? "已隐藏 · 点按恢复"
+                      : added
+                        ? "已添加"
+                        : row.running
+                          ? `运行中 · ${row.agentCount} 个 agent`
+                          : `${row.agentCount} 个 agent`}
                   </Text>
                 </Pressable>
               );

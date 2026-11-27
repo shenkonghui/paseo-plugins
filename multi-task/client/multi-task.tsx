@@ -683,14 +683,34 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
     [views, persist],
   );
 
-  // 从「已隐藏」下拉里恢复一个面板：回平铺网格并设成当前焦点。
+  // 从「已隐藏」下拉里恢复一个面板：挪到列表末尾再展开——平铺时落在最右一列
+  // （或尾行 / 新的一行底部），不打乱已展开面板的位置；同时设成当前焦点。
   const restoreView = useCallback(
     (viewId: string) => {
+      const target = views.find((view) => view.id === viewId);
+      if (!target) return;
       setActiveViewId(viewId);
-      setViewCollapsed(viewId, false);
+      void persist([
+        ...views.filter((view) => view.id !== viewId),
+        { ...target, collapsed: false },
+      ]);
       setHiddenMenuOpen(false);
     },
-    [setViewCollapsed],
+    [views, persist],
+  );
+
+  // 「添加 workspace」弹窗里也直接恢复隐藏面板：按 workspaceId 找回对应的隐藏项。
+  const hiddenWorkspaceIds = useMemo(
+    () => new Set(collapsedViews.map((view) => view.workspaceId)),
+    [collapsedViews],
+  );
+
+  const restoreWorkspace = useCallback(
+    (workspaceId: string) => {
+      const view = collapsedViews.find((item) => item.workspaceId === workspaceId);
+      if (view) restoreView(view.id);
+    },
+    [collapsedViews, restoreView],
   );
 
   // 平铺区域的滚动视口：常驻 iframe 浮层要按它裁切，预览线也按它裁长度。
@@ -1231,7 +1251,9 @@ export function MultiTaskScreen({ theme, layout, host, navigation }: PluginScree
         workspaces={data?.workspaces ?? null}
         agents={data?.agents ?? null}
         existingWorkspaceIds={existingWorkspaceIds}
+        hiddenWorkspaceIds={hiddenWorkspaceIds}
         onAdd={addView}
+        onRestore={restoreWorkspace}
       />
     </View>
   );

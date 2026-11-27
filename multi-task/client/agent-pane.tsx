@@ -63,6 +63,7 @@ interface DomEventTarget {
   removeEventListener(type: string, listener: (event: PointerLike) => void, capture?: boolean): void;
   setPointerCapture?(pointerId: number): void;
   releasePointerCapture?(pointerId: number): void;
+  setAttribute?(name: string, value: string): void;
 }
 
 export function statusColor(status: string | null, theme: Theme): string {
@@ -444,6 +445,12 @@ export function AgentPane({
         : pending > 0
           ? `排队中 · ${pending}`
           : null;
+
+  // 标题 numberOfLines=1 会被截断：给标题区 DOM 节点写原生 title，悬停显示完整 workspace 标题。
+  useEffect(() => {
+    const grip = gripRef.current as unknown as DomEventTarget | null;
+    grip?.setAttribute?.("title", workspaceTitle);
+  }, [workspaceTitle]);
 
   return (
     <Animated.View

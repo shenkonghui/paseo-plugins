@@ -14,6 +14,7 @@
   - **排序**：运行中的排最前 → 其余按最近更新时间倒序（`lastUserMessageAt → updatedAt`）→ 再按名字。
   - **运行中标记**：有 agent 在跑时，该行用 **accent 描边 + accent 状态点**，副标题显示「运行中 · N 个 agent」；其余为普通描边 + 灰点。
 - 点选一个 workspace 即加入窗口；已在窗口中的显示「已添加」。
+  - **恢复隐藏项**：已被隐藏（见第 3 节）的 workspace 在弹窗里显示「已隐藏 · 点按恢复」，点一下即放回平铺网格，不用先关弹窗去找工具栏的「已隐藏」下拉；其余「已添加」的行仍不可点。
 - 每个面板头部有「移除」，从窗口移除该 workspace（不影响原生会话）；会先弹窗确认，取消则保持原样。
 
 面板内容取该 workspace **当前活跃的 agent**（未归档里 `lastUserMessageAt → updatedAt` 最新的那个），所以 workspace 里换了活跃会话，面板会跟着变。
@@ -28,7 +29,7 @@
 - 1 个 → 占满；2 个 → 左右并排；**3 个 → 3 竖列**；4 个 → 2×2（单行会把每格压成细条时）；5 个 → 3+2；6 个 → 3×2；7 个 → 3+3+1……随数量与可用宽度自动变化。
 - **尾行不再被拉成通栏**：最后一行只剩 1 个面板时，它沿用满行的单元格宽度（与上一行左对齐），不会再变成一整条「下面占一个大」的面板；剩 2 个以上则仍平分整行，避免留一大块空白。
 - 面板过多导致高度不足时，保持最小高度并整体**纵向滚动**；窗口尺寸变化（缩放、旋转）会实时重算。
-- **隐藏 / 恢复 / 移除面板**：面板头部「隐藏」按钮把该面板**移出平铺网格**——隐藏项不再占格子，展开的面板自动重算、**变大铺满**。隐藏的面板收进工具栏右上角「**已隐藏 N ▾**」（紧挨在「+ 添加 workspace」右侧），点开是个下拉浮层：每项显示状态点 + workspace 名 + agent 名，右侧「**恢复**」把它放回平铺网格（并设为当前焦点），「**移除**」直接从窗口删掉（同样先弹窗确认）；点浮层外面任何位置关掉。隐藏状态持久化，隐藏期间不建立订阅（省资源）。全部隐藏时主区域提示去右上角「已隐藏」恢复。
+- **隐藏 / 恢复 / 移除面板**：面板头部「隐藏」按钮把该面板**移出平铺网格**——隐藏项不再占格子，展开的面板自动重算、**变大铺满**。隐藏的面板收进工具栏右上角「**已隐藏 N ▾**」（紧挨在「+ 添加 workspace」右侧），点开是个下拉浮层：每项显示状态点 + workspace 名 + agent 名，右侧「**恢复**」把它放回平铺网格（并设为当前焦点），「**移除**」直接从窗口删掉（同样先弹窗确认）；点浮层外面任何位置关掉。隐藏状态持久化，隐藏期间不建立订阅（省资源）。全部隐藏时主区域提示去右上角「已隐藏」恢复。隐藏的面板也可以在「+ 添加 workspace」弹窗里直接点「恢复」（见第 2 节）。
 - **拖动排序**：按住面板**标题区任意位置**（整块头部都行：`⠿` 把手 + 标题 / 副标题，右侧「打开 / 隐藏 / 移除」按钮除外）拖动，整个面板跟手浮起，**落点格子会打上虚线高亮**，松手即换位；顺序持久化。
   - 落点按**格子边界**算：面板中心越过两个格子的边界线（进入相邻格）就换到那一格（按每行实际宽度 / 行高逐格比较），所以拖约半个面板宽度就能跟邻居互换，多行之间可上下换行。
   - 用 **DOM 层 pointer 事件**（`pointerdown` + 全局 `pointermove`/`pointerup`）实现——RN 的 responder 在宿主里会被外层抢走，导致拖不动；超过 6px 才算拖动，单纯点一下不触发。高亮只在跨格时更新 state，不随每帧 pointermove 重渲染。
@@ -56,7 +57,7 @@
 
 每个面板针对一个 workspace（内容是其当前活跃 agent 的会话）。有 DOM（浏览器 / Electron）时面板内容就是**内嵌原生会话**（见第 5 节）；本节描述的自绘对话流只作为**没有 DOM** 的原生客户端自动退化路径。
 
-- 头部：**workspace 名**（主标题）+ 状态胶囊徽标（执行中 / 空闲 / 出错…），副标题为 **agent 名**（没有 agent 时显示「无 agent」）；**「打开」在 app 主界面打开该 workspace**（`navigation.openWorkspace({ workspaceId })`，内嵌 / 退化视图都显示，且没有 agent 的 workspace 也能打开）与「移除」（**移除会先弹窗确认**，确认后才从窗口移除，取消则保持原样）。
+- 头部：**workspace 名**（主标题，过长截断、悬停标题区显示完整标题）+ 状态胶囊徽标（执行中 / 空闲 / 出错…），副标题为 **agent 名**（没有 agent 时显示「无 agent」）；**「打开」在 app 主界面打开该 workspace**（`navigation.openWorkspace({ workspaceId })`，内嵌 / 退化视图都显示，且没有 agent 的 workspace 也能打开）与「移除」（**移除会先弹窗确认**，确认后才从窗口移除，取消则保持原样）。
 - 中部：实时对话流，自动滚到底部。数据与原生会话同一份 `projected` 投影，渲染为**结构化条目**：
   - 用户 / assistant / 思考（斜体弱化）文本支持**轻量 markdown 渲染**：标题、代码块（带语言标签 + 「复制」按钮）、有序 / 无序列表（支持缩进嵌套）、引用、`---` 分隔线、`**粗体**`、`*斜体*`、`~~删除线~~`、行内 `code`、可点击链接（不引入额外依赖；`_`/`__` 变体故意不支持，避免误伤 `some_var_name` 之类的标识符）；
   - **思考（thinking）**单独成卡片（描边 + 浅底 + 斜体灰字）：**限高 120px + 内部滚动**、可点击折叠，不会把整条流一直往下推；**连续的思考会合并到同一张卡片**（对齐 daemon 的 `reasoning_merge` 语义）；
@@ -93,12 +94,12 @@
 
 **workspace 里没有 agent 时**：会打开该 workspace 的「新建 agent」页（`/h/<serverId>/workspace/<workspaceId>?open=draft:new`，app 会把它换成一张新草稿标签），可以直接在里面创建 agent；创建后刷新（或下次重进）即切到该 agent 的会话。原生平台没有 DOM，仍显示「该 workspace 暂无 agent。」。
 
-**侧栏处理**：内嵌的是完整 app 实例，自带左侧 workspace 栏与右侧 Explorer。插件**只藏左侧栏、保留右侧 Explorer**——app 没有提供隐藏它们的 URL 参数，所以在同源 iframe 里注入一段 CSS：`:has(> [data-testid="left-sidebar-resize-handle"]){display:none!important}`。
-这段注入是**尽力而为**的：依赖 app 的 DOM 结构与 `:has()`（Chromium 105+ / Electron 满足），app 改版可能失效；跨源时拿不到 `contentDocument`，不会注入。想连右侧也藏起来，在 `client/embedded-agent.tsx` 的 `HIDE_LEFT_SIDEBAR_CSS` 里补一条 `[data-testid="workspace-explorer-sidebar"]{display:none!important}` 即可。
+**侧栏处理**：内嵌的是完整 app 实例，自带左侧 workspace 栏与右侧 Explorer。插件**只藏左侧栏、保留右侧 Explorer**——app 没有提供隐藏它们的 URL 参数，所以在同源 iframe 里注入一段 CSS（`EMBED_CSS`），并用 `data-multi-task-hide-left` 标记左侧栏容器（`!important` 压过 React 的内联样式）。除容器标记外，CSS 还固定隐藏两块，让左侧任务列表彻底打不开：`#agent-list-gesture-host`（紧凑形态下任务列表的抽屉宿主——快捷键、菜单按钮、边缘手势都只是翻转状态，宿主 display:none 后任何途径都不可见）和 `[data-testid="menu-button"]`（header 上打开它的按钮）。
+这段注入是**尽力而为**的：依赖 app 的 DOM 结构，app 改版可能失效；跨源时拿不到 `contentDocument`，不会注入。想连右侧也藏起来，在 `client/embedded-agent.tsx` 的 `EMBED_CSS` 里补一条 `[data-testid="workspace-explorer-sidebar"]{display:none!important}` 即可。
 
 **窄面板保护**：找左侧栏容器时会向上走到「主区域」（宽度 ≥ 460px）为止；如果面板本身比 460px 还窄、根本找不到主区域，就不隐藏侧栏（交给 app 的紧凑形态），绝不把 `body` / `html` 标成隐藏。旧版本误标到根节点上的标记会自动清掉，避免整个内嵌页空白。
 
-**屏蔽内嵌视图的快捷键**：内嵌视图里 `⌘E` / `⌘L` 会在 iframe 的 window 上被捕获并吃掉（`preventDefault` + `stopImmediatePropagation`），避免它们触发 app 自身的动作。要增删按键，改 `client/embedded-agent.tsx` 里的 `BLOCKED_META_KEYS`。注意：Electron 主进程级菜单加速键无法从渲染进程拦截。
+**屏蔽内嵌视图的快捷键**：内嵌视图里 app 快捷键全部禁用。**不能靠「抢事件」**——app 的 keydown 监听挂在 iframe window 的捕获阶段（`use-keyboard-shortcuts.ts`）、注册得比插件早，同目标同阶段按注册顺序执行，`stopImmediatePropagation` 永远轮不到。所以改从**输入侧断流**：把 iframe realm 的 `KeyboardEvent.prototype` 上 `metaKey`/`ctrlKey`/`altKey` 的 getter 与 `getModifierState` 改写成恒 `false`，app 的 JS 快捷键匹配永远看不到修饰键，监听顺序无关。浏览器层行为不经 JS：⌘C 复制、⌘V 粘贴、⌘A 全选、Alt+方向按词移动、⌘⇧方向选词都保留；MouseEvent/PointerEvent 不动，⇧/⌘+点击等指针逻辑不受影响；`Shift+Tab` 换模式、`Esc` 中断 agent 等无 Meta/Ctrl 的按键仍可用。⌘⇧M（打开多任务窗口）用打补丁前保存的原始 getter 读真实修饰键，照旧转发给宿主。卸载时恢复原描述符。注意：Electron 主进程级菜单加速键（系统菜单栏）在渲染进程之外，拦不到。
 
 **回车发送**：内嵌的 app 在窄面板里会退化成**紧凑形态**——app 的规则是 `submitOnEnter = isWeb && !isCompact`，而面板宽度基本都低于它 `md` 断点（720px），所以内嵌视图里**回车只换行，只能点「发送」按钮**。插件在同源 iframe 里把回车补回来（`installEmbeddedEnterSubmit`）：
 
