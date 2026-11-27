@@ -1,0 +1,15 @@
+{
+  "name": "single-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "description": "?bare=1 隐藏左侧栏，把单个 workspace 以裸视图嵌入其他页面",
+  "files": [
+    "paseo-plugin.json",
+    "README.md",
+    "index.client.tsx",
+    "client/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

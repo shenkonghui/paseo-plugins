@@ -1,0 +1,8 @@
+{
+  "id": "single-workspace",
+  "name": "单窗口视图",
+  "description": "在 workspace URL 后加 ?bare=1 即隐藏左侧栏，把单个 workspace 以裸视图嵌入其他页面（门户只需一层 iframe）。",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}
